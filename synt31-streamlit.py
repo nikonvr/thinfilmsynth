@@ -738,19 +738,34 @@ if remove_button:
             for log_line in removal_logs: log_message(log_line)
             progress_bar.progress(70); structure_actually_changed = (success and new_ep is not None and len(new_ep) < len(current_ep))
             if structure_actually_changed:
-                log_message("  Layer removal successful."); st.session_state.current_optimized_ep = new_ep.copy(); removal_successful = True
+                log_message("  Layer removal successful. Updating structure and display.")
+                st.session_state.current_optimized_ep = new_ep.copy()
+                removal_successful = True
+
+                # Calculate and display final QWOT for the new structure
                 final_qwot_str = "QWOT Error"
-                try: l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']; optimized_qwots = calculate_qwot_from_ep(new_ep, l0_val, nH_r_val, nL_r_val)
-                     if np.any(np.isnan(optimized_qwots)):  # Indenté sous le try
-                     final_qwot_str = "QWOT N/A (NaN)"  # Indenté sous le if
-                 else:  # Aligné avec le if
-                     final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots]) # Indenté sous le else
-        except Exception as qwot_calc_error:  # Aligné avec le try correspondant
-            log_message(f"Error calculating final QWOTs after removal: {qwot_calc_error}") # Indenté sous le except
-        # --- Fin du Bloc ---
-                st.session_state.optimized_qwot_display = final_qwot_str; log_message(f"  Cost after removal/re-opt: {final_cost:.3e}")
-                st.session_state.current_status = f"Status: Layer Removed | MSE: {final_cost:.3e} | Layers: {len(new_ep)}"; status_placeholder.success(st.session_state.current_status)
-                run_calculation_st(ep_vector_to_use=new_ep, is_optimized=True, method_name="Optimized (Post-Removal)"); progress_bar.progress(100)
+                try: # <--- Début du try
+                    # Assurez-vous que 'inputs' est défini correctement plus haut dans la fonction
+                    l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']
+                    optimized_qwots = calculate_qwot_from_ep(new_ep, l0_val, nH_r_val, nL_r_val)
+
+                    # Bloc Corrigé
+                    if np.any(np.isnan(optimized_qwots)):
+                        final_qwot_str = "QWOT N/A (NaN)"
+                    else:
+                        final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
+                except Exception as qwot_calc_error:
+                    log_message(f"Error calculating QWOTs after removal: {qwot_calc_error}")
+                # Fin du Bloc Corrigé
+
+                st.session_state.optimized_qwot_display = final_qwot_str
+                log_message(f"  Cost after removal/re-opt: {final_cost:.3e}")
+                st.session_state.current_status = f"Status: Layer Removed | MSE: {final_cost:.3e} | Layers: {len(new_ep)}"
+                status_placeholder.success(st.session_state.current_status)
+
+                run_calculation_st(ep_vector_to_use=new_ep, is_optimized=True, method_name="Optimized (Post-Removal)")
+                progress_bar.progress(100)
+           
             else:
                 log_message("  No layer removed or structure unchanged."); st.info("Could not find suitable layer or removal/re-opt failed/unchanged.")
                 current_ep_len = len(current_ep) if current_ep is not None else 0; st.session_state.current_status = f"Status: Removal Skipped/Failed | Layers: {current_ep_len}"; status_placeholder.warning(st.session_state.current_status)
