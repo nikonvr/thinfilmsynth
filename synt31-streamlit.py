@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# ... (tous les imports précédents restent inchangés) ...
 import streamlit as st
 import numpy as np
 import matplotlib # type: ignore
@@ -36,7 +35,6 @@ except ImportError:
     numba = NumbaDummy()
     prange = numba.prange
 
-# --- Constants ---
 OPTIMIZATION_MODES: Dict[str, Dict[str, str]] = {
     "Slow": {"n_samples": "32768", "p_best": "50", "n_passes": "5"},
     "Medium": {"n_samples": "8192", "p_best": "15", "n_passes": "3"},
@@ -66,14 +64,14 @@ LBFGSB_WORKER_OPTIONS: Dict[str, Any] = {
     'ftol': 1.e-10,
     'gtol': 1e-7,
     'disp': False,
-    'eps': 1.49e-8 # *** Explicit step size for gradient approximation ***
+    'eps': 1.49e-8
 }
 LBFGSB_REOPT_OPTIONS: Dict[str, Any] = {
     'maxiter': 199,
     'ftol': 1e-10,
     'gtol': 1e-7,
     'disp': False,
-    'eps': 1.49e-8 # *** Explicit step size for gradient approximation ***
+    'eps': 1.49e-8
     }
 PLOT_LAMBDA_STEP_DIVISOR: float = 10.0
 MIN_SCALING_NM: float = 0.1
@@ -95,7 +93,43 @@ DEFAULT_L_RANGE_FIN: float = 700.0
 DEFAULT_L_STEP: float = 10.0
 DEFAULT_SCALING_NM: float = 10.0
 
-# --- Helper Functions ---
+WORKER_COST_ARGS: Optional[Tuple] = None
+WORKER_LBFGSB_ARGS: Optional[Tuple] = None
+
+def init_worker_cost(cost_args_tuple: Tuple):
+    global WORKER_COST_ARGS
+    WORKER_COST_ARGS = cost_args_tuple
+
+def init_worker_lbfgsb(cost_args_tuple: Tuple, lbfgsb_bounds: List[Tuple[Optional[float], Optional[float]]], min_thickness: float):
+    global WORKER_COST_ARGS, WORKER_LBFGSB_ARGS
+    WORKER_COST_ARGS = cost_args_tuple
+    WORKER_LBFGSB_ARGS = (lbfgsb_bounds, min_thickness)
+
+def cost_function_wrapper_for_map(ep_vector: np.ndarray) -> float:
+    if WORKER_COST_ARGS is None:
+        print(f"[PID:{os.getpid()}] ERROR: WORKER_COST_ARGS not initialized!", file=sys.stderr)
+        return np.inf
+    nH, nL, nSub_c, l_vec_optim, active_targets, min_thickness_phys_nm = WORKER_COST_ARGS
+    return calculate_mse_for_optimization_penalized(
+        ep_vector, nH, nL, nSub_c, l_vec_optim, active_targets, min_thickness_phys_nm
+    )
+
+def local_search_worker_wrapper_for_map(start_ep: np.ndarray) -> Dict[str, Any]:
+    if WORKER_COST_ARGS is None or WORKER_LBFGSB_ARGS is None:
+        print(f"[PID:{os.getpid()}] ERROR: WORKER_COST_ARGS or WORKER_LBFGSB_ARGS not initialized!", file=sys.stderr)
+        return {'result': None, 'final_ep': start_ep, 'final_cost': np.inf,
+                'success': False, 'start_ep': start_ep, 'pid': os.getpid(),
+                'log_lines': ["[PID:{os.getpid()}] ERROR: Worker not initialized properly."], 'initial_cost': np.inf}
+    cost_args_tuple = WORKER_COST_ARGS
+    lbfgsb_bounds, min_thickness_phys_nm = WORKER_LBFGSB_ARGS
+    return local_search_worker(
+        start_ep=start_ep,
+        cost_function=cost_function_wrapper_for_map,
+        args_for_cost=(),
+        lbfgsb_bounds=lbfgsb_bounds,
+        min_thickness_phys_nm=min_thickness_phys_nm
+    )
+
 if 'log_messages' not in st.session_state:
     st.session_state.log_messages = []
 
@@ -123,7 +157,6 @@ def upper_power_of_2(n: int) -> int:
     exponent = math.floor(math.log2(n)) + 1
     return 1 << exponent
 
-# --- Numba Accelerated Core ---
 @numba.njit(fastmath=True, cache=True)
 def compute_stack_matrix(
     ep_vector: np.ndarray,
@@ -152,7 +185,7 @@ def compute_stack_matrix(
         M = M_layer @ M
     return M
 
-@numba.njit(parallel=True, fastmath=True, cache=True)
+@numba.njit(fastmath=True, cache=True)
 def calculate_RT_from_ep_core(
     ep_vector: np.ndarray,
     nH_complex: complex,
@@ -168,15 +201,15 @@ def calculate_RT_from_ep_core(
     etainc = 1.0 + 0j
     etasub = nSub_complex
     real_etasub = np.real(etasub)
-    real_etainc = np.real(etainc) # Should be 1.0
+    real_etainc = np.real(etainc)
 
-    for i_l in prange(len(l_vec)):
+    for i_l in range(len(l_vec)):
         l_val = l_vec[i_l]
         if l_val <= 0:
             Rs_arr[i_l], Ts_arr[i_l] = np.nan, np.nan
             continue
 
-        try: # Add inner try-except for potential numerical issues inside loop?
+        try:
             M = compute_stack_matrix(ep_vector, l_val, nH_complex, nL_complex)
             m00, m01, m10, m11 = M[0, 0], M[0, 1], M[1, 0], M[1, 1]
 
@@ -189,21 +222,15 @@ def calculate_RT_from_ep_core(
                 rs = rs_num / rs_den
                 ts = (2 * etainc) / rs_den
                 Rs_arr[i_l] = np.abs(rs)**2
-                # Ensure Ts calculation is robust
-                if real_etainc <= ZERO_THRESHOLD: # Avoid division by zero, though unlikely for air
+                if real_etainc <= ZERO_THRESHOLD:
                      Ts_arr[i_l] = np.nan
                 else:
                      Ts_arr[i_l] = (real_etasub / real_etainc) * np.abs(ts)**2
-                     # Check for NaN/inf result in Ts calculation itself
                      if not np.isfinite(Ts_arr[i_l]): Ts_arr[i_l] = np.nan
 
-        except Exception: # Catch any unexpected error within the loop iteration
+        except Exception:
             Rs_arr[i_l], Ts_arr[i_l] = np.nan, np.nan
 
-    # Replace NaN results with 0.0 after the parallel loop
-    # Consider if 0.0 is the best replacement, or if it biases the MSE.
-    # Returning NaN and handling it in the cost function might be better.
-    # Let's keep returning 0.0 for now as per original logic.
     for i in range(len(Rs_arr)):
         if np.isnan(Rs_arr[i]): Rs_arr[i] = 0.0
         if np.isnan(Ts_arr[i]): Ts_arr[i] = 0.0
@@ -215,8 +242,6 @@ def get_target_points_indices(l_vec: np.ndarray, target_min: float, target_max: 
     if not l_vec.size: return np.empty(0, dtype=np.int64)
     return np.where((l_vec >= target_min) & (l_vec <= target_max))[0]
 
-
-# --- Main Calculation & Interface Functions ---
 def calculate_RT_from_ep(
     ep_vector: Union[np.ndarray, List[float]],
     nH: Union[float, complex],
@@ -224,7 +249,6 @@ def calculate_RT_from_ep(
     nSub: Union[float, complex],
     l_vec: Union[np.ndarray, List[float]]
 ) -> Optional[Dict[str, np.ndarray]]:
-
     try:
         nH_complex = complex(nH)
         nL_complex = complex(nL)
@@ -234,28 +258,19 @@ def calculate_RT_from_ep(
         l_vec_np = np.ascontiguousarray(l_vec, dtype=np.float64)
 
         if not np.all(np.isfinite(ep_vector_np)):
-             # log_message("Warning: Non-finite values found in thickness vector for RT calculation.")
              return None
         if not np.all(np.isfinite(l_vec_np)) or np.any(l_vec_np <= 0):
-              # log_message("Warning: Non-finite or non-positive values found in lambda vector for RT calculation.")
               return None
         if ep_vector_np.ndim != 1 or l_vec_np.ndim != 1:
-              # log_message("Warning: Input vectors must be 1-dimensional for RT calculation.")
               return None
 
         Rs, Ts = calculate_RT_from_ep_core(ep_vector_np, nH_complex, nL_complex, nSub_complex, l_vec_np)
 
-        # Add check here for NaNs in result?
         if np.any(~np.isfinite(Rs)) or np.any(~np.isfinite(Ts)):
-             # log_message(f"Warning: calculate_RT_from_ep_core returned non-finite R/T values.")
-             # Decide: return None or return the arrays with NaNs?
-             # Let's return them with NaNs and let the cost function handle it.
-             pass # Keep NaNs for now
+             pass
 
         return {'l': l_vec_np, 'Rs': Rs, 'Ts': Ts}
-
     except Exception as e:
-        # log_message(f"Error during calculate_RT_from_ep: {type(e).__name__}: {e}") # Can be verbose
         return None
 
 def calculate_initial_ep(
@@ -277,7 +292,6 @@ def calculate_initial_ep(
         ep_initial[i] = multiplier * l0 / (4 * n_real)
 
     if not np.all(np.isfinite(ep_initial)):
-         log_message("WARNING: Initial QWOT calculation produced NaN/inf despite checks. Replacing with 0.")
          ep_initial = np.nan_to_num(ep_initial, nan=0.0, posinf=0.0, neginf=0.0)
 
     return ep_initial
@@ -316,11 +330,9 @@ def calculate_qwot_from_ep(
     qwot_multipliers = np.zeros(num_layers, dtype=np.float64)
 
     if l0 <= 0:
-        log_message("Warning: Cannot calculate QWOT, l0 must be positive.")
         qwot_multipliers[:] = np.nan
         return qwot_multipliers
     if nH_r <= QWOT_N_THRESHOLD or nL_r <= QWOT_N_THRESHOLD:
-        log_message(f"Warning: Cannot calculate QWOT, real indices nH_r ({nH_r}) and nL_r ({nL_r}) must be > {QWOT_N_THRESHOLD}.")
         qwot_multipliers[:] = np.nan
         return qwot_multipliers
 
@@ -330,7 +342,6 @@ def calculate_qwot_from_ep(
 
     return qwot_multipliers
 
-# --- Cost/Objective Functions ---
 def calculate_final_mse(
     res: Optional[Dict[str, np.ndarray]],
     active_targets: List[Dict[str, float]]
@@ -342,7 +353,6 @@ def calculate_final_mse(
     if not active_targets:
         return None, 0
     if not isinstance(res, dict) or 'Ts' not in res or res['Ts'] is None or not isinstance(res['Ts'], np.ndarray) or 'l' not in res or res['l'] is None or not isinstance(res['l'], np.ndarray):
-         log_message("MSE Calc Warning: Invalid 'res' dictionary input.")
          return None, 0
 
     calculated_lambdas = res['l']
@@ -351,12 +361,10 @@ def calculate_final_mse(
     if calculated_lambdas.size == 0 or calculated_Ts.size == 0:
          return None, 0
     if len(calculated_lambdas) != len(calculated_Ts):
-        log_message("MSE Calc Warning: Lambda and Ts arrays have different lengths.")
         return None, 0
 
     finite_mask_all = np.isfinite(calculated_Ts)
     if not np.all(finite_mask_all):
-        # log_message(f"MSE Calc Warning: Found {np.sum(~finite_mask_all)} non-finite T values.")
         calculated_lambdas = calculated_lambdas[finite_mask_all]
         calculated_Ts = calculated_Ts[finite_mask_all]
         if calculated_lambdas.size == 0:
@@ -369,7 +377,6 @@ def calculate_final_mse(
             t_min = target['target_min']
             t_max = target['target_max']
         except KeyError:
-             log_message(f"MSE Calc Warning: Target {i+1} is missing required keys.")
              continue
 
         indices = get_target_points_indices(calculated_lambdas, l_min, l_max)
@@ -409,32 +416,26 @@ def calculate_mse_for_optimization_penalized(
         ep_vector = np.array(ep_vector, dtype=np.float64)
 
     if ep_vector.ndim != 1:
-        # log_message(f"Warning: ep_vector in cost function is not 1D (shape: {ep_vector.shape}).")
-        return np.inf # Return inf for invalid shape
+        return np.inf
 
-    # Penalty calculated based on input ep_vector
     below_min_mask = ep_vector < min_thickness_phys_nm
     penalty: float = 0.0
     if np.any(below_min_mask):
         penalty = PENALTY_BASE + np.sum((min_thickness_phys_nm - ep_vector[below_min_mask])**2) * PENALTY_FACTOR
 
-    # Calculation uses clamped vector
     ep_vector_calc = np.maximum(ep_vector, min_thickness_phys_nm)
 
     try:
         res = calculate_RT_from_ep(ep_vector_calc, nH, nL, nSub, l_vec_optim)
 
         if res is None:
-             # RT calculation failed, return high cost + penalty
              return HIGH_COST_PENALTY + penalty
 
         calculated_lambdas = res['l']
         calculated_Ts = res['Ts']
 
-        # Check for NaNs in the calculation result
         if np.any(~np.isfinite(calculated_Ts)):
-            # log_message(f"Non-finite T values detected for ep={ep_vector[:3]}...") # Potentially verbose
-            return HIGH_COST_PENALTY + penalty # Return high cost if calculation yields NaN
+            return HIGH_COST_PENALTY + penalty
 
         total_squared_error: float = 0.0
         total_points_in_targets: int = 0
@@ -469,17 +470,13 @@ def calculate_mse_for_optimization_penalized(
         final_cost = mse + penalty
 
         if not np.isfinite(final_cost):
-            # log_message(f"Warning: Non-finite final_cost ({final_cost}) for ep={ep_vector[:3]}...") # Potentially verbose
-            return np.inf # Ensure finite cost is returned
+            return np.inf
 
         return final_cost
 
-    except Exception as e: # Catch any unexpected error during calculation or processing
-        # log_message(f"Unexpected error in cost function: {type(e).__name__}") # Potentially verbose
-        return np.inf + penalty # Return inf + penalty on error
+    except Exception as e:
+        return np.inf + penalty
 
-
-# --- Optimization Logic ---
 def perform_single_thin_layer_removal(
     ep_vector_in: np.ndarray,
     min_thickness_phys: float,
@@ -493,12 +490,10 @@ def perform_single_thin_layer_removal(
     num_layers = len(current_ep)
 
     if num_layers <= 1:
-        logs.append(f"{log_prefix}Structure has {num_layers} layers. Cannot merge/delete further.")
         try:
             initial_cost = cost_function(current_ep, *args_for_cost) if num_layers > 0 else np.inf
         except Exception as e:
              initial_cost = np.inf
-             logs.append(f"{log_prefix}Error calculating initial cost for {num_layers} layers: {e}")
         return current_ep, False, initial_cost, logs
 
     thin_layer_index: int = -1
@@ -508,9 +503,7 @@ def perform_single_thin_layer_removal(
         if 0 <= target_layer_index < num_layers:
             thin_layer_index = target_layer_index
             min_thickness_found = current_ep[target_layer_index]
-            logs.append(f"{log_prefix}Targeting specified layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm) for potential removal.")
         else:
-            logs.append(f"{log_prefix}Specified target layer index {target_layer_index+1} is invalid for {num_layers} layers. Finding absolute thinnest.")
             target_layer_index = None
 
     if target_layer_index is None:
@@ -519,17 +512,12 @@ def perform_single_thin_layer_removal(
             min_idx_within_eligible = np.argmin(current_ep[eligible_indices])
             thin_layer_index = eligible_indices[min_idx_within_eligible]
             min_thickness_found = current_ep[thin_layer_index]
-            logs.append(f"{log_prefix}Identified thinnest eligible layer: Layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
-        else:
-             logs.append(f"{log_prefix}No eligible layer found >= {min_thickness_phys:.3f} nm.")
 
     if thin_layer_index == -1:
-        logs.append(f"{log_prefix}No suitable layer identified for removal.")
         try:
             initial_cost = cost_function(current_ep, *args_for_cost)
         except Exception as e:
             initial_cost = np.inf
-            logs.append(f"{log_prefix}Error calculating cost (no removal): {e}")
         return current_ep, False, initial_cost, logs
 
     ep_after_merge: Optional[np.ndarray] = None
@@ -539,16 +527,12 @@ def perform_single_thin_layer_removal(
     if thin_layer_index == 0:
         if num_layers >= 2:
             ep_after_merge = current_ep[2:].copy()
-            merged_info = f"Removing layer 1 (index 0) and layer 2 (index 1)."
-            logs.append(f"{log_prefix}{merged_info} New structure: {len(ep_after_merge)} layers.")
             structure_changed = True
         else:
-             logs.append(f"{log_prefix}Cannot remove layer 1 (index 0) - only 1 layer present.")
+             pass
 
     elif thin_layer_index == num_layers - 1:
         ep_after_merge = current_ep[:-1].copy()
-        merged_info = f"Removed last layer {num_layers} (index {num_layers-1}) ({current_ep[-1]:.3f} nm)."
-        logs.append(f"{log_prefix}{merged_info} New structure: {len(ep_after_merge)} layers.")
         structure_changed = True
 
     else:
@@ -559,13 +543,9 @@ def perform_single_thin_layer_removal(
                 np.array([merged_thickness]),
                 current_ep[thin_layer_index + 2:]
             ))
-            merged_info = (f"Removed layer {thin_layer_index + 1} (index {thin_layer_index}), "
-                           f"merged layer {thin_layer_index} (index {thin_layer_index - 1}) ({current_ep[thin_layer_index - 1]:.3f}) "
-                           f"with layer {thin_layer_index + 2} (index {thin_layer_index + 1}) ({current_ep[thin_layer_index + 1]:.3f}) -> {merged_thickness:.3f}")
-            logs.append(f"{log_prefix}{merged_info} New structure: {len(ep_after_merge)} layers.")
             structure_changed = True
         else:
-             logs.append(f"{log_prefix}Cannot merge around layer {thin_layer_index+1} - structure too small.")
+             pass
 
     final_ep = current_ep
     final_cost = np.inf
@@ -575,57 +555,40 @@ def perform_single_thin_layer_removal(
         num_layers_reopt = len(ep_after_merge)
 
         if num_layers_reopt == 0:
-            logs.append(f"{log_prefix}Empty structure after merge/removal. Returning empty.")
             return np.array([]), True, np.inf, logs
 
         ep_after_merge = np.maximum(ep_after_merge, min_thickness_phys)
         reopt_bounds = [(min_thickness_phys, None)] * num_layers_reopt
         x0_reopt = ep_after_merge
-
-        logs.append(f"{log_prefix}Starting local re-optimization (L-BFGS-B, maxiter={LBFGSB_REOPT_OPTIONS['maxiter']}) on {num_layers_reopt} layers...")
-        reopt_start_time = time.time()
         reopt_args = args_for_cost
 
         try:
             reopt_result = minimize(cost_function, x0_reopt, args=reopt_args,
                                     method='L-BFGS-B', bounds=reopt_bounds,
                                     options=LBFGSB_REOPT_OPTIONS)
-            reopt_time = time.time() - reopt_start_time
-
             reopt_success = reopt_result.success and np.isfinite(reopt_result.fun)
             reopt_cost = reopt_result.fun if reopt_success else np.inf
-            reopt_iters = reopt_result.nit
-
-            logs.append(f"{log_prefix}Re-optimization finished in {reopt_time:.3f}s. Success: {reopt_success}, Cost: {reopt_cost:.3e}, Iters: {reopt_iters}")
 
             if reopt_success:
                 final_ep = np.maximum(reopt_result.x.copy(), min_thickness_phys)
                 final_cost = reopt_cost
                 success_overall = True
-                logs.append(f"{log_prefix}Re-optimization successful.")
             else:
-                logs.append(f"{log_prefix}Re-optimization failed. Using merged structure without re-opt.")
                 final_ep = np.maximum(x0_reopt.copy(), min_thickness_phys)
                 success_overall = False
                 try:
                     final_cost = cost_function(final_ep, *reopt_args)
-                    logs.append(f"{log_prefix}Recalculated cost (non-re-opt): {final_cost:.3e}")
                 except Exception as e_cost:
                     final_cost = np.inf
-                    logs.append(f"{log_prefix}Error calculating cost of merged structure: {e_cost}")
 
         except Exception as e_reopt:
-            logs.append(f"{log_prefix}ERROR during L-BFGS-B re-optimization: {e_reopt}\n{traceback.format_exc(limit=2)}")
-            logs.append(f"{log_prefix}Using merged structure without re-optimization attempt due to error.")
             final_ep = np.maximum(x0_reopt.copy(), min_thickness_phys)
             success_overall = False
             try:
                  final_cost = cost_function(final_ep, *reopt_args)
-                 logs.append(f"{log_prefix}Recalculated cost (non-re-opt after error): {final_cost:.3e}")
             except Exception: final_cost = np.inf
 
     else:
-        logs.append(f"{log_prefix}Merge/removal not performed or structure unchanged. No re-optimization.")
         success_overall = False
         final_ep = current_ep
         try:
@@ -634,20 +597,16 @@ def perform_single_thin_layer_removal(
 
     return final_ep, success_overall, final_cost, logs
 
-
 def local_search_worker(
     start_ep: np.ndarray,
-    cost_function: Callable[..., float],
+    cost_function: Callable[[np.ndarray], float],
     args_for_cost: Tuple,
     lbfgsb_bounds: List[Tuple[Optional[float], Optional[float]]],
     min_thickness_phys_nm: float
 ) -> Dict[str, Any]:
-
     worker_pid = os.getpid()
     start_time = time.time()
     log_lines: List[str] = []
-    log_lines.append(f"  [PID:{worker_pid} Start]: Starting local search.") # Simplified start message
-
     initial_cost: float = np.inf
     start_ep_checked: np.ndarray = np.array([])
     iter_count: int = 0
@@ -659,19 +618,9 @@ def local_search_worker(
              raise ValueError(f"Start EP is invalid (shape: {start_ep_local.shape}).")
         start_ep_checked = np.maximum(start_ep_local, min_thickness_phys_nm)
 
-        # *** Log: Start EP INFO ***
-        ep_preview = ", ".join([f"{x:.3f}" for x in start_ep_checked[:5]])
-        if len(start_ep_checked) > 5: ep_preview += "..."
-        log_lines.append(f"  [PID:{worker_pid} Prep]: Start EP (checked, first 5): [{ep_preview}]")
-
         if len(lbfgsb_bounds) != len(start_ep_checked):
             raise ValueError(f"Dimension mismatch: start_ep ({len(start_ep_checked)}) vs bounds ({len(lbfgsb_bounds)})")
-
-        # *** Log avant calcul coût initial ***
-        log_lines.append(f"  [PID:{worker_pid} Prep]: Calculating initial cost...")
-        initial_cost = cost_function(start_ep_checked, *args_for_cost)
-        log_lines.append(f"  [PID:{worker_pid} Prep]: Initial cost = {initial_cost:.6e}")
-
+        initial_cost = cost_function(start_ep_checked)
 
     except Exception as e:
         log_lines.append(f"  [PID:{worker_pid} ERROR Prep]: Preparing/calculating initial cost failed: {type(e).__name__}: {e}")
@@ -681,44 +630,32 @@ def local_search_worker(
         log_lines.append(f"  [PID:{worker_pid} Summary]: {worker_summary}")
         return {'result': result, 'final_ep': start_ep, 'final_cost': np.inf, 'success': False, 'start_ep': start_ep, 'pid': worker_pid, 'log_lines': log_lines, 'initial_cost': np.inf}
 
-    # *** Vérifie si le coût initial est fini avant d'appeler minimize ***
     if not np.isfinite(initial_cost):
-         log_lines.append(f"  [PID:{worker_pid} Check]: Initial cost is {initial_cost}. Aborting minimize call.")
          result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message="Initial cost was non-finite", nit=0)
     else:
-        # --- Exécute l'optimisation SEULEMENT si le coût initial est fini ---
         try:
-            # *** Log avant appel minimize ***
-            log_lines.append(f"  [PID:{worker_pid} Minimize]: Calling scipy.optimize.minimize (L-BFGS-B)...")
             minimize_start_time = time.time()
-
-            # Utilise les options incluant 'eps'
             result = minimize(
-                cost_function, start_ep_checked, args=args_for_cost,
-                method='L-BFGS-B', bounds=lbfgsb_bounds,
-                options=LBFGSB_WORKER_OPTIONS, # Utilise les options mises à jour
+                cost_function,
+                start_ep_checked,
+                args=(),
+                method='L-BFGS-B',
+                bounds=lbfgsb_bounds,
+                options=LBFGSB_WORKER_OPTIONS,
             )
-
             minimize_duration = time.time() - minimize_start_time
-            # *** Log apres appel minimize ***
             minimize_success = getattr(result, 'success', 'N/A')
             minimize_nit = getattr(result, 'nit', 'N/A')
             minimize_fun = getattr(result, 'fun', 'N/A')
-            log_lines.append(f"  [PID:{worker_pid} Minimize]: Minimize call returned after {minimize_duration:.3f}s. Success: {minimize_success}, Iterations: {minimize_nit}, Final Func Val: {minimize_fun}")
-
-            iter_count = result.nit if hasattr(result, 'nit') else 0 # Met à jour iter_count
+            iter_count = result.nit if hasattr(result, 'nit') else 0
 
             if result.x is not None:
-                # Applique la contrainte *après* la fin de l'optimisation
                 result.x = np.maximum(result.x, min_thickness_phys_nm)
 
         except Exception as e:
             end_time = time.time()
-            error_message = f"Worker {worker_pid} Exception during minimize call after {end_time-start_time:.2f}s: {type(e).__name__}: {e}"
-            log_lines.append(f"  [PID:{worker_pid} ERROR Minimize]: {error_message}\n{traceback.format_exc(limit=2)}")
             result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message=f"Worker Exception during minimize: {e}", nit=iter_count)
 
-    # --- Traitement des résultats (cette partie s'exécute toujours) ---
     end_time = time.time()
     final_cost_raw = result.fun if hasattr(result, 'fun') else np.inf
     final_cost = final_cost_raw if np.isfinite(final_cost_raw) else np.inf
@@ -727,193 +664,123 @@ def local_search_worker(
     iterations = iter_count
     message_raw = result.message if hasattr(result, 'message') else "No message"
     message = message_raw.decode('utf-8', errors='ignore') if isinstance(message_raw, bytes) else str(message_raw)
-
-    worker_summary = (
-        f"Worker {worker_pid} finished in {end_time - start_time:.2f}s. "
-        f"StartCost={initial_cost:.3e}, FinalCost={final_cost:.3e}, "
-        f"Success={success_status} (LBFGSB Success: {lbfgsb_success}, Finite Cost: {np.isfinite(final_cost)}), "
-        f"LBFGSB_Iters={iterations}, Msg='{message}'"
-    )
-    log_lines.append(f"  [PID:{worker_pid} Summary]: {worker_summary}")
-
     final_x = result.x if success_status and result.x is not None else start_ep_checked
 
     return {'result': result, 'final_ep': final_x, 'final_cost': final_cost,
             'success': success_status, 'start_ep': start_ep, 'pid': worker_pid,
             'log_lines': log_lines, 'initial_cost': initial_cost}
 
-# --- Fonction _run_sobol_evaluation avec logs ajoutés ---
+
 def _run_sobol_evaluation(
     num_layers: int,
     n_samples: int,
     lower_bounds: np.ndarray,
     upper_bounds: np.ndarray,
-    cost_function_partial_map: Callable[[np.ndarray], float],
     min_thickness_phys_nm: float,
+    cost_args_tuple: Tuple,
     phase_name: str = "Phase 1",
     progress_hook: Optional[Callable[[float], None]] = None
 ) -> List[Tuple[float, np.ndarray]]:
-
-    log_with_elapsed_time(f"\n--- {phase_name}: Initial Evaluation (Sobol, N={n_samples}) ---")
     start_time_eval = time.time()
 
-    # --- Validation des paramètres et ajustement des bornes ---
     if lower_bounds is None or upper_bounds is None or len(lower_bounds) != num_layers or len(upper_bounds) != num_layers:
         raise ValueError(f"_run_sobol_evaluation requires valid bounds matching num_layers ({num_layers}) (phase: {phase_name}).")
     if num_layers == 0:
-         log_with_elapsed_time("Warning: Number of layers is 0, cannot run Sobol evaluation.")
          return []
     if np.any(lower_bounds > upper_bounds):
-        log_with_elapsed_time(f"Warning: Sobol lower bounds > upper bounds found in {phase_name}. Clamping.")
         upper_bounds = np.maximum(lower_bounds, upper_bounds)
     lower_bounds = np.maximum(min_thickness_phys_nm, lower_bounds)
     upper_bounds = np.maximum(lower_bounds + ZERO_THRESHOLD, upper_bounds)
-    log_with_elapsed_time(f"  Bounds (min={min_thickness_phys_nm:.3f}): L={np.array2string(lower_bounds, precision=3)}, U={np.array2string(upper_bounds, precision=3)}")
 
-    # --- Génération des candidats Sobol ---
     ep_candidates: List[np.ndarray] = []
     if n_samples > 0:
         try:
-            # *** Log avant génération Sobol ***
-            log_with_elapsed_time(f"  Generating {n_samples} Sobol candidates...")
             sampler = qmc.Sobol(d=num_layers, scramble=True)
             points_unit_cube = sampler.random(n=n_samples)
             ep_candidates_raw = qmc.scale(points_unit_cube, lower_bounds, upper_bounds)
             ep_candidates = [np.maximum(min_thickness_phys_nm, cand) for cand in ep_candidates_raw]
-            # *** Log après génération Sobol ***
-            log_with_elapsed_time(f"  Generated {len(ep_candidates)} candidates successfully.")
         except Exception as e_sobol:
-             log_with_elapsed_time(f"  ERROR during Sobol sampling: {type(e_sobol).__name__}: {e_sobol}")
-             return [] # Impossible de continuer sans échantillons
+             return []
 
     if not ep_candidates:
-        log_with_elapsed_time("  No Sobol candidates to evaluate.")
         return []
 
-    # --- Évaluation parallèle (ou séquentielle si échec) ---
     costs: List[float] = []
     initial_results: List[Tuple[float, np.ndarray]] = []
-    num_workers_eval = min(len(ep_candidates), os.cpu_count()) # Utilise min(N, cpu_count) workers
-    log_with_elapsed_time(f"  Evaluating cost (MSE) for {len(ep_candidates)} candidates (max {num_workers_eval} workers)...")
+    num_workers_eval = min(len(ep_candidates), os.cpu_count())
     eval_start_pool = time.time()
 
     try:
-        # *** Logs ajoutés autour du Pool ***
-        log_with_elapsed_time(f"    Creating multiprocessing Pool with {num_workers_eval} workers for Sobol evaluation...")
-        with multiprocessing.Pool(processes=num_workers_eval) as pool:
-            log_with_elapsed_time(f"    Submitting {len(ep_candidates)} cost function tasks to pool.map...")
-            costs = pool.map(cost_function_partial_map, ep_candidates) # Appel bloquant
-            log_with_elapsed_time(f"    Pool.map finished for Sobol. Received {len(costs)} cost results.")
-        log_with_elapsed_time(f"    Multiprocessing Pool for Sobol closed.")
-
+        with multiprocessing.Pool(processes=num_workers_eval,
+                                  initializer=init_worker_cost,
+                                  initargs=(cost_args_tuple,)) as pool:
+            costs = pool.map(cost_function_wrapper_for_map, ep_candidates)
         eval_pool_time = time.time() - eval_start_pool
-        log_with_elapsed_time(f"  Parallel evaluation finished in {eval_pool_time:.2f}s.")
 
-        # Vérification de cohérence
         if len(costs) != len(ep_candidates):
-            log_with_elapsed_time(f"  Warning: Mismatch in cost results length ({len(costs)}) vs candidates ({len(ep_candidates)}). Truncating.")
             costs = costs[:len(ep_candidates)]
         initial_results = list(zip(costs, ep_candidates))
 
     except Exception as e_pool:
-        # --- Log en cas d'échec du Pool -> passage en séquentiel ---
-        log_with_elapsed_time(f"  ERROR during parallel evaluation: {type(e_pool).__name__}: {e_pool}\n{traceback.format_exc(limit=2)}")
-        log_with_elapsed_time("  Switching to sequential evaluation...")
         costs = []
         eval_start_seq = time.time()
         total_candidates = len(ep_candidates)
-        log_with_elapsed_time(f"    Starting sequential evaluation for {total_candidates} candidates...") # Log début séquentiel
+        nH_s, nL_s, nSub_c_s, l_vec_optim_s, active_targets_s, min_thickness_phys_nm_s = cost_args_tuple
         for i, cand in enumerate(ep_candidates):
             try:
-                cost = cost_function_partial_map(cand)
+                cost = calculate_mse_for_optimization_penalized(cand, nH_s, nL_s, nSub_c_s, l_vec_optim_s, active_targets_s, min_thickness_phys_nm_s)
                 costs.append(cost)
             except Exception as e_seq:
-                costs.append(np.inf) # Coût infini si l'évaluation échoue
-                log_with_elapsed_time(f"    Error evaluating candidate {i+1} sequentially: {e_seq}")
+                costs.append(np.inf)
 
-            # Log de progression plus fréquent en séquentiel
-            if (i + 1) % 50 == 0 or i == total_candidates - 1: # Log tous les 50 ou à la fin
+            if (i + 1) % 50 == 0 or i == total_candidates - 1:
                 seq_elapsed = time.time() - eval_start_seq
-                log_with_elapsed_time(f"    ... Evaluated {i + 1}/{total_candidates} sequentially ({seq_elapsed:.2f}s elapsed)...")
                 if progress_hook:
                      current_progress = (i + 1) / total_candidates
-                     progress_hook(current_progress) # Mise à jour barre de progression Streamlit
+                     progress_hook(current_progress)
 
         eval_seq_time = time.time() - eval_start_seq
         initial_results = list(zip(costs, ep_candidates))
-        log_with_elapsed_time(f"  Sequential evaluation finished in {eval_seq_time:.2f}s.")
 
-    # --- Filtrage et tri des résultats ---
     valid_initial_results = [(c, p) for c, p in initial_results if np.isfinite(c) and c < HIGH_COST_PENALTY]
     num_invalid = len(initial_results) - len(valid_initial_results)
-    if num_invalid > 0:
-         log_with_elapsed_time(f"  Filtering: {num_invalid} invalid/high initial costs discarded.")
 
     if not valid_initial_results:
-        log_with_elapsed_time(f"Warning: No valid initial costs found after {phase_name} evaluation.")
-        return [] # Retourne une liste vide si aucun résultat valide
-
-    valid_initial_results.sort(key=lambda x: x[0]) # Tri par coût croissant
+        return []
+    valid_initial_results.sort(key=lambda x: x[0])
     eval_time = time.time() - start_time_eval
-    log_with_elapsed_time(f"--- End {phase_name} (Initial Evaluation) in {eval_time:.2f}s ---")
-    if valid_initial_results:
-        log_with_elapsed_time(f"  Found {len(valid_initial_results)} valid points. Best initial cost: {valid_initial_results[0][0]:.3e}")
 
     return valid_initial_results
 
 
 def _run_parallel_local_search(
     p_best_starts: List[np.ndarray],
-    cost_function: Callable[..., float],
     args_for_cost_tuple: Tuple,
     lbfgsb_bounds: List[Tuple[Optional[float], Optional[float]]],
     min_thickness_phys_nm: float,
-    progress_hook: Optional[Callable[[float], None]] = None # Progress hook might be hard to implement here
+    progress_hook: Optional[Callable[[float], None]] = None
 ) -> List[Dict[str, Any]]:
 
     p_best_actual = len(p_best_starts)
     if p_best_actual == 0:
-        log_with_elapsed_time("WARNING: No starting points provided for local search. Skipping Phase 2.")
         return []
-
-    log_with_elapsed_time(f"\n--- Phase 2: Local Search (L-BFGS-B) (P={p_best_actual}) ---")
     start_time_local = time.time()
-
-    local_search_partial = partial(local_search_worker,
-                                   cost_function=cost_function,
-                                   args_for_cost=args_for_cost_tuple,
-                                   lbfgsb_bounds=lbfgsb_bounds,
-                                   min_thickness_phys_nm=min_thickness_phys_nm)
-
+    lbfgsb_init_args = (args_for_cost_tuple, lbfgsb_bounds, min_thickness_phys_nm)
     local_results_raw: List[Dict[str, Any]] = []
     num_workers_local = min(p_best_actual, os.cpu_count())
-    log_with_elapsed_time(f"  Starting {p_best_actual} local searches in parallel (max {num_workers_local} workers)...")
     local_start_pool = time.time()
 
     try:
-        # *** Log avant création Pool ***
-        log_with_elapsed_time(f"  Creating multiprocessing Pool with {num_workers_local} workers...")
-        with multiprocessing.Pool(processes=num_workers_local) as pool:
-            # *** Log avant appel map ***
-            log_with_elapsed_time(f"  Submitting {p_best_actual} tasks to pool.map...")
-            local_results_raw = list(pool.map(local_search_partial, p_best_starts))
-            # *** Log apres appel map ***
-            log_with_elapsed_time(f"  Pool.map finished. Received {len(local_results_raw)} results.")
-        # *** Log apres fermeture Pool ***
-        log_with_elapsed_time(f"  Multiprocessing Pool closed.")
-
+        with multiprocessing.Pool(processes=num_workers_local,
+                                  initializer=init_worker_lbfgsb,
+                                  initargs=lbfgsb_init_args) as pool:
+            local_results_raw = list(pool.map(local_search_worker_wrapper_for_map, p_best_starts))
         local_pool_time = time.time() - local_start_pool
-        log_with_elapsed_time(f"  Parallel local searches task submission and collection finished in {local_pool_time:.2f}s.")
     except Exception as e_pool_local:
         log_with_elapsed_time(f"  ERROR during parallel local search pool execution: {type(e_pool_local).__name__}: {e_pool_local}\n{traceback.format_exc(limit=2)}")
-        local_results_raw = [] # Ensure it's an empty list on error
+        local_results_raw = []
 
     local_time = time.time() - start_time_local
-    log_with_elapsed_time(f"--- End Phase 2 (Local Search Function) in {local_time:.2f}s ---") # Note: this marks the end of this function, not necessarily the end of all worker execution time if error occurred.
-
-    if len(local_results_raw) != p_best_actual:
-         log_with_elapsed_time(f"Warning: Number of local search results ({len(local_results_raw)}) does not match number of starts ({p_best_actual}). Potential worker errors occurred.")
-
     return local_results_raw
 
 
@@ -922,9 +789,6 @@ def _process_optimization_results(
     initial_best_ep: Optional[np.ndarray],
     initial_best_cost: float
 ) -> Tuple[Optional[np.ndarray], float, OptimizeResult]:
-
-    log_with_elapsed_time(f"\n--- Processing {len(local_results_raw)} local search results ---")
-
     overall_best_cost: float = initial_best_cost if np.isfinite(initial_best_cost) else np.inf
     overall_best_ep: Optional[np.ndarray] = initial_best_ep.copy() if initial_best_ep is not None else None
     overall_best_result_obj: OptimizeResult = OptimizeResult(
@@ -937,17 +801,11 @@ def _process_optimization_results(
     best_run_info: Dict[str, Any] = {'index': -1, 'cost': overall_best_cost}
     processed_results_count: int = 0
 
-    if overall_best_ep is None:
-        log_with_elapsed_time("Warning: Initial best EP for processing is None.")
-
     for i, worker_output in enumerate(local_results_raw):
         run_idx = i + 1
         if isinstance(worker_output, dict) and 'log_lines' in worker_output:
             worker_log_lines = worker_output.get('log_lines', [])
-            for line in worker_log_lines:
-                log_with_elapsed_time(f"    (Worker Log Run {run_idx}): {line.strip()}")
         else:
-            log_with_elapsed_time(f"  Result {run_idx}: Unexpected format from worker, cannot log details. Output: {worker_output}")
             continue
 
         if 'result' in worker_output and 'final_ep' in worker_output and 'final_cost' in worker_output and 'success' in worker_output:
@@ -958,33 +816,19 @@ def _process_optimization_results(
             processed_results_count += 1
 
             if success_run and final_ep_run is not None and final_ep_run.size > 0 and final_cost_run < overall_best_cost:
-                 log_with_elapsed_time(f"  ==> New overall best cost found by Result {run_idx}! Cost: {final_cost_run:.3e} (Previous: {overall_best_cost:.3e})")
                  overall_best_cost = final_cost_run
                  overall_best_ep = final_ep_run.copy()
                  overall_best_result_obj = res_obj
                  best_run_info = {'index': run_idx, 'cost': final_cost_run}
-
         else:
-            log_with_elapsed_time(f"  Result {run_idx}: Worker output dictionary missing required keys.")
-
-    log_with_elapsed_time(f"--- Finished processing local search results ({processed_results_count} processed) ---")
-
-    if processed_results_count == 0 and best_run_info['index'] == -1:
-        log_with_elapsed_time("WARNING: No valid local search results were processed. Keeping pre-local best result.")
-    elif best_run_info['index'] > 0:
-        log_with_elapsed_time(f"Overall best result found by local search Run {best_run_info['index']} (Cost {best_run_info['cost']:.3e}).")
-    elif best_run_info['index'] == -1:
-         log_with_elapsed_time(f"No local search improved the pre-local search best result (Cost {overall_best_cost:.3e}).")
+            pass
 
     if overall_best_ep is None or len(overall_best_ep) == 0:
-        log_with_elapsed_time("CRITICAL WARNING: Result processing finished with an empty or None best thickness vector!")
         if initial_best_ep is not None and initial_best_ep.size > 0:
-             log_with_elapsed_time("Falling back to initial state provided to processing function.")
              overall_best_ep = initial_best_ep.copy()
              overall_best_cost = initial_best_cost if np.isfinite(initial_best_cost) else np.inf
              overall_best_result_obj = OptimizeResult(x=overall_best_ep, fun=overall_best_cost, success=False, message="Fell back to initial state", nit=0)
         else:
-             log_with_elapsed_time("Error: Cannot fall back, initial state was also invalid.")
              overall_best_ep = None
              overall_best_cost = np.inf
              overall_best_result_obj = OptimizeResult(x=None, fun=np.inf, success=False, message="Processing failed, no valid state", nit=0)
@@ -1008,47 +852,34 @@ def run_optimization_process(
 ) -> Tuple[Optional[np.ndarray], float, OptimizeResult]:
 
     run_id_str = f"Pass {run_number}/{total_passes}"
-    log_with_elapsed_time("\n" + "*"*10 + f" STARTING OPTIMIZATION - {run_id_str} " + "*"*10)
     start_time_run = time.time()
-
-    n_samples = inputs['n_samples']
     nH = inputs['nH_r'] + 1j * inputs['nH_i']
     nL = inputs['nL_r'] + 1j * inputs['nL_i']
     nSub_c = inputs['nSub'] + 0j
     l_step_gui = inputs['l_step']
     l_min_overall = inputs['l_range_deb']
     l_max_overall = inputs['l_range_fin']
+    n_samples = inputs['n_samples']
 
     num_layers: int = 0
     lower_bounds: np.ndarray = np.array([])
     upper_bounds: np.ndarray = np.array([])
 
-    pass_status_prefix = f"Status: {run_id_str}"
-    status_suffix = f"| Best MSE: {current_best_mse:.3e} | Layers: {current_best_layers}"
-
-    if status_placeholder: status_placeholder.info(f"{pass_status_prefix} - Phase 1 (Sobol Sampling) {status_suffix}")
-
     if run_number == 1:
-        if ep_nominal_for_cost is None or ep_nominal_for_cost.size == 0:
-            raise ValueError(f"Nominal thickness vector ({run_id_str}) is empty or None.")
+        if ep_nominal_for_cost is None or ep_nominal_for_cost.size == 0: raise ValueError(f"Nominal thickness vector ({run_id_str}) is empty or None.")
         ep_ref_pass1 = np.maximum(MIN_THICKNESS_PHYS_NM, ep_nominal_for_cost)
         num_layers = len(ep_ref_pass1)
         lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_pass1 * INITIAL_SOBOL_REL_SCALE_LOWER)
         upper_bounds = ep_ref_pass1 * INITIAL_SOBOL_REL_SCALE_UPPER
         upper_bounds = np.maximum(upper_bounds, lower_bounds + ZERO_THRESHOLD)
-        log_with_elapsed_time(f"  Using relative scaling [{INITIAL_SOBOL_REL_SCALE_LOWER:.2f}, {INITIAL_SOBOL_REL_SCALE_UPPER:.2f}] around nominal for Sobol ({run_id_str}).")
     else:
-        if ep_reference_for_sobol is None or ep_reference_for_sobol.size == 0:
-             raise ValueError(f"Reference thickness vector ({run_id_str}) is empty or None for absolute scaling.")
-        if current_scaling is None or current_scaling <= 0:
-             raise ValueError(f"Invalid current_scaling value ({current_scaling}) for absolute Sobol ({run_id_str}).")
+        if ep_reference_for_sobol is None or ep_reference_for_sobol.size == 0: raise ValueError(f"Reference thickness vector ({run_id_str}) is empty or None for absolute scaling.")
+        if current_scaling is None or current_scaling <= 0: raise ValueError(f"Invalid current_scaling value ({current_scaling}) for absolute Sobol ({run_id_str}).")
         ep_ref = np.maximum(MIN_THICKNESS_PHYS_NM, ep_reference_for_sobol)
         num_layers = len(ep_ref)
         lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref - current_scaling)
         upper_bounds = ep_ref + current_scaling
         upper_bounds = np.maximum(upper_bounds, lower_bounds + ZERO_THRESHOLD)
-        log_with_elapsed_time(f"  Using absolute scaling +/- {current_scaling:.3f} nm (min {MIN_THICKNESS_PHYS_NM:.3f} nm) around previous best for Sobol ({run_id_str}).")
-
     if num_layers == 0: raise ValueError(f"Could not determine number of layers for Sobol ({run_id_str}).")
 
     if l_min_overall <= 0 or l_max_overall <= 0: raise ValueError("Wavelength range limits must be positive.")
@@ -1061,134 +892,82 @@ def run_optimization_process(
     except Exception as e_geom:
          raise ValueError(f"Failed to generate geomspace optimization wavelength vector: {e_geom}")
 
-    log_with_elapsed_time(f"  Generated {len(l_vec_optim)} optimization points geometrically for cost evaluation.")
-
     args_for_cost_tuple: Tuple = (nH, nL, nSub_c, l_vec_optim, active_targets, MIN_THICKNESS_PHYS_NM)
-    cost_function_partial_map = partial(calculate_mse_for_optimization_penalized,
-                                        nH=nH, nL=nL, nSub=nSub_c, l_vec_optim=l_vec_optim,
-                                        active_targets=active_targets,
-                                        min_thickness_phys_nm=MIN_THICKNESS_PHYS_NM)
-
-    sobol_progress = None
-    if progress_bar_hook:
-         def sobol_progress_update(frac):
-             progress_bar_hook.progress( (0.0 + frac * 0.5) / total_passes)
-         sobol_progress = sobol_progress_update
 
     valid_initial_results_p1 = _run_sobol_evaluation(
         num_layers, n_samples, lower_bounds, upper_bounds,
-        cost_function_partial_map, MIN_THICKNESS_PHYS_NM,
+        MIN_THICKNESS_PHYS_NM,
+        args_for_cost_tuple,
         phase_name=f"{run_id_str} Phase 1",
-        progress_hook=sobol_progress
+        progress_hook=None
     )
 
     top_p_results_combined: List[Tuple[float, np.ndarray]] = []
     if run_number == 1:
-        if status_placeholder: status_placeholder.info(f"{pass_status_prefix} - Phase 1bis (Refining Starts) {status_suffix}")
-        log_with_elapsed_time(f"\n--- {run_id_str} Phase 1bis: Refining Top P Starts ---")
         num_to_select_p1 = min(p_best_this_pass, len(valid_initial_results_p1))
-
         if num_to_select_p1 == 0:
-            log_with_elapsed_time("WARNING: Phase 1 yielded no valid starting points. Skipping refinement.")
             top_p_results_combined = []
         else:
             top_p_results_p1 = valid_initial_results_p1[:num_to_select_p1]
             top_p_starts_p1 = [ep for cost, ep in top_p_results_p1]
-
             n_samples_per_point_raw = max(1, n_samples // p_best_this_pass) if p_best_this_pass > 0 else n_samples
             n_samples_per_point = upper_power_of_2(n_samples_per_point_raw)
-            log_with_elapsed_time(f"  Generating {n_samples_per_point} samples around each of the top {num_to_select_p1} points (scaling +/- {PHASE1BIS_SCALING_NM} nm).")
-
             phase1bis_candidates: List[np.ndarray] = []
             for i, ep_start in enumerate(top_p_starts_p1):
-                lower_bounds_1bis = np.maximum(MIN_THICKNESS_PHYS_NM, ep_start - PHASE1BIS_SCALING_NM)
-                upper_bounds_1bis = ep_start + PHASE1BIS_SCALING_NM
-                upper_bounds_1bis = np.maximum(upper_bounds_1bis, lower_bounds_1bis + ZERO_THRESHOLD)
-                try:
+                 lower_bounds_1bis = np.maximum(MIN_THICKNESS_PHYS_NM, ep_start - PHASE1BIS_SCALING_NM)
+                 upper_bounds_1bis = ep_start + PHASE1BIS_SCALING_NM
+                 upper_bounds_1bis = np.maximum(upper_bounds_1bis, lower_bounds_1bis + ZERO_THRESHOLD)
+                 try:
                     sampler_1bis = qmc.Sobol(d=num_layers, scramble=True, seed=int(time.time()) + i)
                     points_unit_1bis = sampler_1bis.random(n=n_samples_per_point)
                     new_candidates_raw = qmc.scale(points_unit_1bis, lower_bounds_1bis, upper_bounds_1bis)
                     new_candidates = [np.maximum(MIN_THICKNESS_PHYS_NM, cand) for cand in new_candidates_raw]
                     phase1bis_candidates.extend(new_candidates)
-                except Exception as e_sobol1bis:
-                     log_with_elapsed_time(f"Error during Sobol sampling for point {i+1} in Phase 1bis: {e_sobol1bis}")
-
-            log_with_elapsed_time(f"  Generated {len(phase1bis_candidates)} total candidates for Phase 1bis evaluation.")
+                 except Exception as e_sobol1bis: pass
 
             results_1bis_raw_pairs: List[Tuple[float, np.ndarray]] = []
             if phase1bis_candidates:
                 num_workers_1bis = min(len(phase1bis_candidates), os.cpu_count())
-                log_with_elapsed_time(f"  Evaluating cost for {len(phase1bis_candidates)} Phase 1bis candidates (max {num_workers_1bis} workers)...")
-                eval_start_pool_1bis = time.time()
                 try:
-                    with multiprocessing.Pool(processes=num_workers_1bis) as pool:
-                        costs_1bis = pool.map(cost_function_partial_map, phase1bis_candidates)
-                    eval_pool_time_1bis = time.time() - eval_start_pool_1bis
-                    log_with_elapsed_time(f"  Parallel evaluation (Phase 1bis) finished in {eval_pool_time_1bis:.2f}s.")
-                    if len(costs_1bis) == len(phase1bis_candidates):
-                        results_1bis_raw_pairs = list(zip(costs_1bis, phase1bis_candidates))
-                    else:
-                         log_with_elapsed_time("Warning: Mismatch in Phase 1bis results length.")
-                except Exception as e_pool_1bis:
-                    log_with_elapsed_time(f"  ERROR during parallel evaluation (Phase 1bis): {e_pool_1bis}")
-
+                    with multiprocessing.Pool(processes=num_workers_1bis, initializer=init_worker_cost, initargs=(args_for_cost_tuple,)) as pool:
+                        costs_1bis = pool.map(cost_function_wrapper_for_map, phase1bis_candidates)
+                    if len(costs_1bis) == len(phase1bis_candidates): results_1bis_raw_pairs = list(zip(costs_1bis, phase1bis_candidates))
+                except Exception as e_pool_1bis: pass
             valid_results_1bis = [(c, p) for c, p in results_1bis_raw_pairs if np.isfinite(c) and c < HIGH_COST_PENALTY]
-            num_invalid_1bis = len(results_1bis_raw_pairs) - len(valid_results_1bis)
-            if num_invalid_1bis > 0: log_with_elapsed_time(f"  Filtering (Phase 1bis): {num_invalid_1bis} invalid/high costs discarded.")
-
             combined_results = top_p_results_p1 + valid_results_1bis
-            log_with_elapsed_time(f"  Combined Phase 1 ({len(top_p_results_p1)}) and Phase 1bis ({len(valid_results_1bis)}) valid results: {len(combined_results)} total.")
-
-            if not combined_results:
-                log_with_elapsed_time("WARNING: No valid results found after combining Phase 1 and Phase 1bis.")
-                top_p_results_combined = []
+            if combined_results:
+                 combined_results.sort(key=lambda x: x[0])
+                 num_to_select_final = min(p_best_this_pass, len(combined_results))
+                 top_p_results_combined = combined_results[:num_to_select_final]
             else:
-                combined_results.sort(key=lambda x: x[0])
-                num_to_select_final = min(p_best_this_pass, len(combined_results))
-                log_with_elapsed_time(f"  Selecting final top {num_to_select_final} points from combined results for Phase 2.")
-                top_p_results_combined = combined_results[:num_to_select_final]
-        log_with_elapsed_time(f"--- End {run_id_str} Phase 1bis ---")
-
+                 top_p_results_combined = []
     else:
         num_to_select = min(p_best_this_pass, len(valid_initial_results_p1))
-        log_with_elapsed_time(f"  Selecting top {num_to_select} points from Phase 1 for Phase 2.")
         top_p_results_combined = valid_initial_results_p1[:num_to_select]
 
     selected_starts = [ep for cost, ep in top_p_results_combined]
     selected_costs = [cost for cost, ep in top_p_results_combined]
-
-    if status_placeholder: status_placeholder.info(f"{pass_status_prefix} - Phase 2 (Local Search) {status_suffix}")
 
     overall_best_ep: Optional[np.ndarray] = None
     overall_best_cost: float = np.inf
     overall_best_result_obj: OptimizeResult = OptimizeResult(x=None, fun=np.inf, success=False, message="Optimization did not yield a valid result yet.")
 
     if not selected_starts:
-        log_with_elapsed_time(f"WARNING: No starting points available for Phase 2 ({run_id_str}). Skipping.")
         overall_best_ep = None
         overall_best_cost = np.inf
         overall_best_result_obj = OptimizeResult(x=None, fun=np.inf, success=False, message=f"Phase 2 skipped - no starts ({run_id_str})", nit=0)
     else:
         initial_best_ep_for_processing = selected_starts[0].copy()
         initial_best_cost_for_processing = selected_costs[0]
-        log_with_elapsed_time(f"  Top {len(selected_starts)} points selected for Phase 2:")
-        for i in range(min(5, len(selected_starts))):
-            cost_str = f"{selected_costs[i]:.3e}" if np.isfinite(selected_costs[i]) else "inf"
-            log_with_elapsed_time(f"    Point {i+1}: Cost={cost_str}")
-        if len(selected_starts) > 5: log_with_elapsed_time("    ...")
-
         lbfgsb_bounds = [(MIN_THICKNESS_PHYS_NM, None)] * num_layers
 
         local_results_raw = _run_parallel_local_search(
             selected_starts,
-            calculate_mse_for_optimization_penalized,
             args_for_cost_tuple,
             lbfgsb_bounds,
             MIN_THICKNESS_PHYS_NM,
             progress_hook=None
         )
-
-        if status_placeholder: status_placeholder.info(f"{pass_status_prefix} - Processing L-BFGS-B results... {status_suffix}")
         overall_best_ep, overall_best_cost, overall_best_result_obj = _process_optimization_results(
             local_results_raw,
             initial_best_ep_for_processing,
@@ -1196,20 +975,8 @@ def run_optimization_process(
         )
 
     run_time_pass = time.time() - start_time_run
-    log_with_elapsed_time(f"--- End Optimization {run_id_str} in {run_time_pass:.2f}s ---")
-    log_with_elapsed_time(f"Best cost found this pass ({run_id_str}): {overall_best_cost:.3e}")
-    if overall_best_ep is not None and overall_best_ep.size > 0:
-        layers_this_pass = len(overall_best_ep)
-        ep_str = ", ".join([f"{th:.3f}" for th in overall_best_ep[:10]])
-        if layers_this_pass > 10: ep_str += "..."
-        log_with_elapsed_time(f"Thicknesses this pass ({run_id_str}, {layers_this_pass} layers): [{ep_str}]")
-    else:
-        log_with_elapsed_time(f"WARNING: No valid thickness vector found for {run_id_str}.")
-
     return overall_best_ep, overall_best_cost, overall_best_result_obj
 
-
-# --- Plotting Function ---
 def setup_axis_grids(ax: plt.Axes) -> None:
     ax.grid(which='major', color='grey', linestyle='-', linewidth=0.7, alpha=0.7)
     ax.grid(which='minor', color='lightgrey', linestyle=':', linewidth=0.5, alpha=0.5)
@@ -1225,7 +992,6 @@ def tracer_graphiques(
     method_name: str = "",
     res_optim_grid: Optional[Dict[str, np.ndarray]] = None
 ) -> plt.Figure:
-
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     opt_method_str = f" ({method_name})" if method_name else ""
     window_title = f'Stack Results{opt_method_str}' if is_optimized else 'Nominal Stack Calculation Results'
@@ -1394,12 +1160,9 @@ def tracer_graphiques(
     plt.tight_layout(pad=1.5, rect=[0, 0, 1, 0.95])
     return fig
 
-# --- Streamlit UI and Logic ---
 def get_active_targets_from_state() -> Optional[List[Dict[str, float]]]:
     active_targets: List[Dict[str, float]] = []
     if 'targets' not in st.session_state:
-        log_message("ERROR: Target definitions not found in session state.")
-        st.error("Target definitions not found in session state.")
         return None
 
     overall_lambda_min: Optional[float] = None
@@ -1432,7 +1195,6 @@ def get_active_targets_from_state() -> Optional[List[Dict[str, float]]]:
                 if overall_lambda_max is None or l_max > overall_lambda_max: overall_lambda_max = l_max
 
             except (ValueError, TypeError) as e:
-                log_message(f"ERROR Spectral Target Configuration {i+1}: {e}")
                 st.error(f"Error in Spectral Target Zone {i+1}: {e}")
                 return None
 
@@ -1446,9 +1208,9 @@ def get_active_targets_from_state() -> Optional[List[Dict[str, float]]]:
                  if overall_lambda_min < calc_l_min or overall_lambda_max > calc_l_max:
                      st.warning(f"Calculation range [{calc_l_min:.1f}-{calc_l_max:.1f} nm] does not fully cover active target range [{overall_lambda_min:.1f}-{overall_lambda_max:.1f} nm]. Results might be suboptimal or MSE misleading.")
     except (ValueError, TypeError, AttributeError):
-         st.warning("Could not validate target range against calculation range due to invalid/missing range inputs.")
+         pass
     except Exception as e:
-         st.warning(f"Error during target/calculation range check: {e}")
+         pass
 
     return active_targets
 
@@ -1522,7 +1284,6 @@ def _prepare_calculation_data_st(
     nH = complex(inputs['nH_r'], inputs['nH_i'])
     nL = complex(inputs['nL_r'], inputs['nL_i'])
     nSub_c = complex(inputs['nSub'])
-
     l_step_gui = inputs['l_step']
     l_step_plot = max(ZERO_THRESHOLD, l_step_gui / PLOT_LAMBDA_STEP_DIVISOR)
     l_vec_plot = np.linspace(inputs['l_range_deb'], inputs['l_range_fin'],
@@ -1542,11 +1303,10 @@ def _prepare_calculation_data_st(
         if inputs['emp_str'].strip():
             raise ValueError("Nominal QWOT provided but resulted in an empty structure.")
         else:
-            log_message("Empty structure (no QWOT provided). Calculating R/T for bare substrate.")
+             pass
     elif not np.all(np.isfinite(ep_actual_orig)):
         ep_corrected = np.nan_to_num(ep_actual_orig, nan=0.0, posinf=0.0, neginf=0.0)
         if not np.array_equal(ep_actual_orig, ep_corrected):
-             log_message("WARNING: Original thicknesses contained NaN/inf, replaced with 0.")
              ep_actual_orig = ep_corrected
         if not np.all(np.isfinite(ep_actual_orig)):
              raise ValueError(f"Thickness vector contains non-finite values even after correction: {ep_actual_orig}")
@@ -1557,7 +1317,6 @@ def _prepare_calculation_data_st(
         ep_actual_calc = ep_actual_orig
 
     return nH, nL, nSub_c, l_vec_plot, ep_actual_calc, ep_actual_orig
-
 
 def update_display_info(ep_vector_source: Optional[np.ndarray] = None) -> None:
     num_layers: Union[int, str] = 0
@@ -1597,7 +1356,6 @@ def update_display_info(ep_vector_source: Optional[np.ndarray] = None) -> None:
             min_thickness_str = f"None ≥ {MIN_THICKNESS_PHYS_NM} nm"
     st.session_state.thinnest_layer_display = min_thickness_str
 
-
 def run_calculation_st(
     ep_vector_to_use: Optional[np.ndarray] = None,
     is_optimized: bool = False,
@@ -1606,7 +1364,6 @@ def run_calculation_st(
 ) -> None:
     global status_placeholder, progress_placeholder, plot_placeholder
 
-    log_message(f"\n{'='*20} Starting {'Optimized' if is_optimized else 'Nominal'} Calculation {'('+method_name+')' if method_name else ''} {'='*20}")
     st.session_state.current_status = f"Status: Running {'Optimized' if is_optimized else 'Nominal'} Calculation..."
     if status_placeholder: status_placeholder.info(st.session_state.current_status)
     progress_bar = None
@@ -1644,12 +1401,10 @@ def run_calculation_st(
 
         l_vec_final_plot = l_vec_override if l_vec_override is not None else l_vec_plot_default
 
-        log_message("  Calculating T(λ) for plotting...")
         if progress_bar: progress_bar.progress(25)
         start_rt_time = time.time()
         res_fine = calculate_RT_from_ep(ep_actual_calc, nH, nL, nSub_c, l_vec_final_plot)
         rt_time = time.time() - start_rt_time
-        log_message(f"  T calculation (plot) finished in {rt_time:.3f}s.")
         if progress_bar: progress_bar.progress(50)
 
         if res_fine is None:
@@ -1667,37 +1422,25 @@ def run_calculation_st(
                  l_vec_optim_display = np.array([])
 
             if l_vec_optim_display.size > 0:
-                 log_message("  Calculating T(λ) on optimization grid for MSE display...")
                  res_optim_grid = calculate_RT_from_ep(ep_actual_calc, nH, nL, nSub_c, l_vec_optim_display)
-                 log_message("  T calculation (optim grid) finished.")
                  if progress_bar: progress_bar.progress(75)
 
                  if res_optim_grid:
                      mse_display, num_pts_mse = calculate_final_mse(res_optim_grid, active_targets_for_plot)
-                     if num_pts_mse > 0:
-                         log_message(f"  MSE (display, Optim grid) = {mse_display:.3e} over {num_pts_mse} points.")
-                     else:
-                         log_message("  No points found in target zones (Optim grid) to calculate display MSE.")
-                         mse_display = np.nan
+                     if num_pts_mse <= 0 : mse_display = np.nan
                  else:
-                     log_message("  Failed to calculate T on optim grid, cannot calculate display MSE.")
                      mse_display = None
-
             else:
-                 log_message("  Optim grid empty or invalid, cannot calculate display MSE.")
                  mse_display = np.nan
         else:
-            log_message("  No active spectral targets, display MSE not calculated.")
             mse_display = None
 
-        log_message("  Generating plots...")
         if progress_bar: progress_bar.progress(90)
         final_fig = tracer_graphiques(res_fine, ep_actual_orig,
                                       inputs['nH_r'], inputs['nH_i'], inputs['nL_r'], inputs['nL_i'], inputs['nSub'],
                                       active_targets_for_plot, mse_display,
                                       is_optimized=is_optimized, method_name=method_name,
                                       res_optim_grid=res_optim_grid)
-        log_message("  Plot generation finished.")
         if progress_bar: progress_bar.progress(100)
 
         if is_optimized:
@@ -1706,7 +1449,6 @@ def run_calculation_st(
 
         st.session_state.current_status = f"Status: {'Optimized' if is_optimized else 'Nominal'} Calculation Complete"
         if status_placeholder: status_placeholder.success(st.session_state.current_status)
-        log_message(f"--- Finished {'Optimized' if is_optimized else 'Nominal'} Calculation ---")
 
         st.session_state.last_run_calculation_results = {
              'res': res_fine, 'ep': final_result_ep,
@@ -1717,7 +1459,6 @@ def run_calculation_st(
 
     except (ValueError, RuntimeError) as e:
         err_msg = f"ERROR (Input/Logic) in calculation: {e}"
-        log_message(err_msg)
         if status_placeholder: st.error(err_msg)
         st.session_state.current_status = f"Status: Calculation Failed (Input Error)"
         if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -1726,7 +1467,6 @@ def run_calculation_st(
     except Exception as e:
         err_msg = f"ERROR (Unexpected) in calculation: {type(e).__name__}: {e}"
         tb_msg = traceback.format_exc()
-        log_message(err_msg); log_message(tb_msg); print(err_msg); print(tb_msg)
         if status_placeholder: st.error(f"{err_msg}. See log/console for details.")
         st.session_state.current_status = f"Status: Calculation Failed (Unexpected Error)"
         if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -1738,7 +1478,6 @@ def run_calculation_st(
              plt.close(final_fig)
         elif plot_placeholder and 'err_msg' in locals():
              plot_placeholder.empty()
-
         if progress_placeholder: progress_placeholder.empty()
 
 
@@ -1747,7 +1486,6 @@ def run_optimization_st() -> None:
 
     st.session_state.optim_start_time = time.time()
     clear_log()
-    log_with_elapsed_time(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === Starting Multi-Pass Optimization Process ===")
 
     st.session_state.current_optimized_ep = None
     st.session_state.optimization_ran_since_nominal_change = False
@@ -1782,7 +1520,6 @@ def run_optimization_st() -> None:
         active_targets = get_active_targets_from_state()
         if active_targets is None: raise ValueError("Failed to retrieve/validate spectral targets.")
         if not active_targets: raise ValueError("No active spectral targets defined. Optimization requires at least one target.")
-        log_with_elapsed_time(f"{len(active_targets)} active target zone(s) found.")
 
         nH_complex_nom = complex(inputs['nH_r'], inputs['nH_i'])
         nL_complex_nom = complex(inputs['nL_r'], inputs['nL_i'])
@@ -1801,7 +1538,6 @@ def run_optimization_st() -> None:
 
             initial_nominal_cost = calculate_mse_for_optimization_penalized(ep_nominal_glob, nH_complex_nom, nL_complex_nom, nSub_c, l_vec_optim_init, active_targets, MIN_THICKNESS_PHYS_NM)
             overall_best_cost_final = initial_nominal_cost if np.isfinite(initial_nominal_cost) else np.inf
-            log_with_elapsed_time(f"Initial nominal cost: {overall_best_cost_final:.3e}, Layers: {initial_nominal_layers}")
 
             if np.isfinite(overall_best_cost_final):
                  overall_best_ep_final = ep_nominal_glob.copy()
@@ -1814,7 +1550,6 @@ def run_optimization_st() -> None:
             if status_placeholder: status_placeholder.info(st.session_state.current_status)
 
         except Exception as e_init_cost:
-            log_with_elapsed_time(f"Warning: Could not calculate initial nominal cost: {e_init_cost}. Starting optimization with Inf cost.")
             overall_best_cost_final = np.inf
             overall_best_ep_final = None
             ep_ref_for_next_pass = ep_nominal_glob.copy()
@@ -1868,7 +1603,6 @@ def run_optimization_st() -> None:
             new_best_found_this_pass = False
             if ep_this_pass is not None and ep_this_pass.size > 0 and np.isfinite(cost_this_pass):
                 if cost_this_pass < overall_best_cost_final:
-                    log_with_elapsed_time(f"*** New overall best cost found in {run_id_str}: {cost_this_pass:.3e} (Previous: {overall_best_cost_final:.3e}) ***")
                     overall_best_cost_final = cost_this_pass
                     overall_best_ep_final = ep_this_pass.copy()
                     overall_best_layers = len(overall_best_ep_final)
@@ -1885,12 +1619,10 @@ def run_optimization_st() -> None:
                     st.session_state.current_status = f"{pass_status_prefix} - Completed. No improvement. {status_suffix}"
                     if status_placeholder: status_placeholder.info(st.session_state.current_status)
             else:
-                log_with_elapsed_time(f"ERROR: {run_id_str} did not return a valid solution (cost: {cost_this_pass}, ep size: {ep_this_pass.size if ep_this_pass is not None else 'None'}).")
                 st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"
                 if status_placeholder: status_placeholder.warning(st.session_state.current_status)
                 if ep_ref_for_next_pass is None:
                     raise RuntimeError(f"{run_id_str} failed and no prior successful result exists. Optimization aborted.")
-                log_with_elapsed_time("Continuing optimization using previous best result as reference.")
 
         if progress_bar: progress_bar.progress(current_progress_step / progress_max_steps)
         st.session_state.current_status = f"Status: Post-processing (Auto-Remove)... | Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
@@ -1899,7 +1631,6 @@ def run_optimization_st() -> None:
         if overall_best_ep_final is None:
              raise RuntimeError("Optimization finished, but no valid result found before post-processing.")
 
-        log_with_elapsed_time(f"\n--- Checking for automatic thin layer removal (< {AUTO_REMOVE_THRESHOLD_NM} nm) ---")
         max_auto_removals = len(overall_best_ep_final)
 
         temp_inputs_ar = _validate_physical_inputs_from_state(require_optim_params=False)
@@ -1923,7 +1654,6 @@ def run_optimization_st() -> None:
 
         while auto_removed_count < max_auto_removals:
             if current_ep_for_removal is None or len(current_ep_for_removal) <= 1:
-                log_with_elapsed_time("  Structure too short for further auto-removal.")
                 break
 
             eligible_indices = np.where((current_ep_for_removal >= MIN_THICKNESS_PHYS_NM) &
@@ -1934,7 +1664,6 @@ def run_optimization_st() -> None:
                 thinnest_below_threshold_idx = np.where(current_ep_for_removal == thinnest_eligible_value)[0][0]
                 thinnest_below_threshold_val = thinnest_eligible_value
 
-                log_with_elapsed_time(f"  Auto-removing layer {thinnest_below_threshold_idx + 1} (thickness {thinnest_below_threshold_val:.3f} nm < {AUTO_REMOVE_THRESHOLD_NM} nm)")
                 status_suffix = f"| Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
                 st.session_state.current_status = f"Status: Auto-removing layer {auto_removed_count + 1}... {status_suffix}"
                 if status_placeholder: status_placeholder.info(st.session_state.current_status)
@@ -1944,7 +1673,6 @@ def run_optimization_st() -> None:
                     calculate_mse_for_optimization_penalized, temp_args_for_cost_ar,
                     log_prefix="    [Auto Removal] ", target_layer_index=thinnest_below_threshold_idx
                 )
-                for log_line in removal_logs: log_with_elapsed_time(log_line)
 
                 structure_actually_changed = (success and new_ep is not None and len(new_ep) < len(current_ep_for_removal))
 
@@ -1954,15 +1682,10 @@ def run_optimization_st() -> None:
                     overall_best_cost_final = cost_after if np.isfinite(cost_after) else np.inf
                     overall_best_layers = len(overall_best_ep_final)
                     auto_removed_count += 1
-                    log_with_elapsed_time(f"  Auto-removal successful. New cost: {overall_best_cost_final:.3e}, Layers: {overall_best_layers}")
                 else:
-                    log_with_elapsed_time("    Auto-removal/re-optimization failed or structure unchanged this iteration. Stopping auto-removal.")
                     break
             else:
-                log_with_elapsed_time(f"  No layers found below {AUTO_REMOVE_THRESHOLD_NM} nm (and >= {MIN_THICKNESS_PHYS_NM} nm).")
                 break
-
-        if auto_removed_count > 0: log_with_elapsed_time(f"--- Finished automatic removal ({auto_removed_count} layer(s) removed) ---")
 
         optimization_successful = True
         st.session_state.current_optimized_ep = overall_best_ep_final.copy() if overall_best_ep_final is not None else None
@@ -1978,25 +1701,11 @@ def run_optimization_st() -> None:
                 else:
                      final_qwot_str = ", ".join([f"{q:.4f}" for q in optimized_qwots])
             except Exception as qwot_calc_error:
-                log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
+                 pass
         else: final_qwot_str = "N/A (Empty Structure)"
         st.session_state.optimized_qwot_display = final_qwot_str
 
         final_method_name = f"{n_passes}-Pass Opt" + (f" + {auto_removed_count} AutoRm" if auto_removed_count > 0 else "")
-        log_with_elapsed_time("\n" + "="*60)
-        log_with_elapsed_time(f"--- Overall Optimization ({final_method_name}) Finished ---")
-        log_with_elapsed_time(f"Best Final Cost Found (MSE): {overall_best_cost_final:.3e}")
-        log_with_elapsed_time(f"Final number of layers: {overall_best_layers}")
-        log_with_elapsed_time(f"Final Optimized QWOT (λ₀={inputs['l0']}nm): {final_qwot_str}")
-        if overall_best_ep_final is not None:
-            ep_str_list = [f"L{i+1}:{th:.4f}" for i, th in enumerate(overall_best_ep_final)]
-            log_with_elapsed_time(f"Final optimized thicknesses ({overall_best_layers} layers, nm): [{', '.join(ep_str_list)}]")
-        if final_successful_result_obj and isinstance(final_successful_result_obj, OptimizeResult):
-             best_res_nit = getattr(final_successful_result_obj, 'nit', 'N/A')
-             best_res_msg_raw = getattr(final_successful_result_obj, 'message', 'N/A')
-             best_res_msg = best_res_msg_raw.decode('utf-8', errors='ignore') if isinstance(best_res_msg_raw, bytes) else str(best_res_msg_raw)
-             log_with_elapsed_time(f"Best Result Info: Iters={best_res_nit}, Msg='{best_res_msg}'")
-        log_with_elapsed_time("="*60 + "\n")
 
         if progress_bar: progress_bar.progress(1.0)
         final_status_text = f"Status: Opt Complete{' (+AutoRm)' if auto_removed_count>0 else ''} | MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
@@ -2007,7 +1716,6 @@ def run_optimization_st() -> None:
 
     except (ValueError, RuntimeError) as e:
         err_msg = f"ERROR (Input/Logic) during optimization: {e}"
-        log_with_elapsed_time(err_msg)
         if status_placeholder: st.error(err_msg)
         st.session_state.current_status = f"Status: Optimization Failed (Input/Logic Error)"
         if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -2018,7 +1726,6 @@ def run_optimization_st() -> None:
     except Exception as e:
         err_msg = f"ERROR (Unexpected) during optimization: {type(e).__name__}: {e}"
         tb_msg = traceback.format_exc()
-        log_with_elapsed_time(err_msg); log_with_elapsed_time(tb_msg); print(err_msg); print(tb_msg)
         if status_placeholder: st.error(f"{err_msg}. See log/console for details.")
         st.session_state.current_status = f"Status: Optimization Failed (Unexpected Error)"
         if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -2036,7 +1743,6 @@ def run_optimization_st() -> None:
 def run_remove_layer_st() -> None:
     global status_placeholder, progress_placeholder, plot_placeholder
 
-    log_message("\n" + "-"*10 + " Attempting Manual Thin Layer Removal " + "-"*10)
     st.session_state.current_status = "Status: Removing thinnest layer..."
     if status_placeholder: status_placeholder.info(st.session_state.current_status)
     progress_bar = None
@@ -2048,7 +1754,6 @@ def run_remove_layer_st() -> None:
     final_ep_after_removal: Optional[np.ndarray] = None
 
     if current_ep is None or not optim_ran or len(current_ep) <= 1:
-        log_message("ERROR: No valid optimized structure with >= 2 layers available for removal.")
         if status_placeholder: st.error("No valid optimized structure (must have >= 2 layers) found to modify.")
         st.session_state.current_status = "Status: Removal Failed (No Structure/Not Optimized)"
         if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -2075,18 +1780,15 @@ def run_remove_layer_st() -> None:
             args_for_cost_tuple: Tuple = (nH, nL, nSub_c, l_vec_optim, active_targets, MIN_THICKNESS_PHYS_NM)
             if progress_bar: progress_bar.progress(30)
 
-            log_message("  Starting removal and re-optimization...")
             new_ep, success, final_cost, removal_logs = perform_single_thin_layer_removal(
                 current_ep, MIN_THICKNESS_PHYS_NM, calculate_mse_for_optimization_penalized,
                 args_for_cost_tuple, log_prefix="  [Manual Removal] "
             )
-            for log_line in removal_logs: log_message(log_line)
             if progress_bar: progress_bar.progress(70)
 
             structure_actually_changed = (success and new_ep is not None and len(new_ep) < len(current_ep))
 
             if structure_actually_changed:
-                log_message("  Layer removal successful. Updating structure and display.")
                 st.session_state.current_optimized_ep = new_ep.copy()
                 final_ep_after_removal = new_ep.copy()
                 removal_successful = True
@@ -2098,10 +1800,9 @@ def run_remove_layer_st() -> None:
                     if np.any(np.isnan(optimized_qwots)):
                          final_qwot_str = "QWOT N/A (NaN)"
                     else: final_qwot_str = ", ".join([f"{q:.4f}" for q in optimized_qwots])
-                except Exception as qwot_calc_error: log_message(f"Error calculating QWOTs after removal: {qwot_calc_error}")
+                except Exception as qwot_calc_error: pass
                 st.session_state.optimized_qwot_display = final_qwot_str
 
-                log_message(f"  Cost after removal/re-opt: {final_cost:.3e}")
                 layers_after = len(new_ep)
                 st.session_state.current_status = f"Status: Layer Removed | MSE: {final_cost:.3e} | Layers: {layers_after}"
                 if status_placeholder: status_placeholder.success(st.session_state.current_status)
@@ -2110,7 +1811,6 @@ def run_remove_layer_st() -> None:
                 if progress_bar: progress_bar.progress(100)
 
             else:
-                log_message("  No layer removed or structure unchanged.")
                 if status_placeholder: st.info("Could not find suitable layer or removal/re-optimization failed/unchanged.")
                 current_ep_len = len(current_ep) if current_ep is not None else 0
                 st.session_state.current_status = f"Status: Removal Skipped/Failed | Layers: {current_ep_len}"
@@ -2118,14 +1818,12 @@ def run_remove_layer_st() -> None:
 
         except (ValueError, RuntimeError) as e:
             err_msg = f"ERROR (Input/Logic) during layer removal: {e}"
-            log_message(err_msg)
             if status_placeholder: st.error(err_msg)
             st.session_state.current_status = "Status: Removal Failed (Input/Logic Error)"
             if status_placeholder: status_placeholder.error(st.session_state.current_status)
         except Exception as e:
             err_msg = f"ERROR (Unexpected) in layer removal: {type(e).__name__}: {e}"
             tb_msg = traceback.format_exc()
-            log_message(err_msg); log_message(tb_msg); print(err_msg); print(tb_msg)
             if status_placeholder: st.error(f"{err_msg}. See log/console for details.")
             st.session_state.current_status = "Status: Removal Failed (Unexpected Error)"
             if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -2134,11 +1832,9 @@ def run_remove_layer_st() -> None:
             update_display_info(final_ep_after_removal)
             st.rerun()
 
-
 def run_set_nominal_st() -> None:
     global status_placeholder, plot_placeholder
 
-    log_message("\n--- Setting Current Optimized Design as Nominal ---")
     st.session_state.current_status = "Status: Setting current as Nominal..."
     if status_placeholder: status_placeholder.info(st.session_state.current_status)
 
@@ -2146,7 +1842,6 @@ def run_set_nominal_st() -> None:
     optim_ran = st.session_state.get('optimization_ran_since_nominal_change', False)
 
     if current_ep is None or not optim_ran or len(current_ep) == 0:
-        log_message("ERROR: No optimized design available to set as nominal.")
         if status_placeholder: st.error("No valid optimized design is currently loaded.")
         st.session_state.current_status = "Status: Set Nominal Failed (No Design)"
         if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -2159,12 +1854,10 @@ def run_set_nominal_st() -> None:
 
             if np.any(np.isnan(optimized_qwots)):
                 final_qwot_str = ""
-                log_message("Warning: QWOT calculation resulted in NaN. Cannot set nominal QWOT string.")
                 if status_placeholder: st.warning("Could not calculate valid QWOT multipliers (resulted in NaN). Nominal QWOT field not updated.")
             else:
                 final_qwot_str = ", ".join([f"{q:.6f}" for q in optimized_qwots])
                 st.session_state.emp_str_input = final_qwot_str
-                log_message(f"Nominal QWOT string updated in state: {final_qwot_str}")
                 if status_placeholder: st.success("Current optimized design set as new Nominal Structure (QWOT). Optimized state cleared.")
 
             st.session_state.current_optimized_ep = None
@@ -2176,7 +1869,6 @@ def run_set_nominal_st() -> None:
 
         except Exception as e:
             err_msg = f"ERROR during 'Set Nominal' operation: {type(e).__name__}: {e}"
-            log_message(err_msg)
             if status_placeholder: st.error(f"An error occurred setting nominal: {e}")
             st.session_state.current_status = "Status: Set Nominal Failed (Error)"
             if status_placeholder: status_placeholder.error(st.session_state.current_status)
@@ -2184,8 +1876,6 @@ def run_set_nominal_st() -> None:
             update_display_info(None)
             st.rerun()
 
-
-# Define placeholders in the global scope so action functions can access them
 status_placeholder: Optional[Any] = None
 progress_placeholder: Optional[Any] = None
 plot_placeholder: Optional[Any] = None
@@ -2219,7 +1909,6 @@ def main() -> None:
         'thinnest_layer_display': "- nm",
         'optimized_qwot_display': ""
     }
-    # Set optimization params based on default mode
     default_params_for_mode = OPTIMIZATION_MODES.get(DEFAULT_MODE, list(OPTIMIZATION_MODES.values())[0]) # Fallback if default invalid
     default_ui_values['n_samples_input'] = default_params_for_mode['n_samples']
     default_ui_values['p_best_input'] = default_params_for_mode['p_best']
@@ -2229,7 +1918,6 @@ def main() -> None:
         if key not in st.session_state:
             st.session_state[key] = value
         # Ensure numeric inputs stored as strings are corrected on load if needed
-        # (This is mainly for n_samples, p_best, n_passes if they were ever non-numeric)
         if key in ['n_samples_input', 'p_best_input', 'n_passes_input']:
             try:
                  int(st.session_state[key])
@@ -2418,6 +2106,7 @@ def main() -> None:
         if last_res_data and isinstance(last_res_data, dict) and last_res_data.get('res') is not None and last_res_data.get('ep') is not None:
             try:
                 required_keys = ['res', 'ep', 'inputs', 'active_targets', 'mse', 'is_optimized', 'method_name', 'res_optim_grid']
+                # Check if the stored result has all necessary components
                 if all(key in last_res_data for key in required_keys) and last_res_data['inputs'] is not None:
                     inputs = last_res_data['inputs']
                     active_targets = last_res_data['active_targets']
@@ -2444,6 +2133,7 @@ def main() -> None:
             current_ep_display = st.session_state.current_optimized_ep
         elif st.session_state.get('last_run_calculation_results', {}).get('ep') is not None:
              current_ep_display = st.session_state.last_run_calculation_results['ep']
+        # Update display info (layer count, thinnest) based on current state
         update_display_info(current_ep_display)
 
         # Update status display from session state
@@ -2466,4 +2156,3 @@ if __name__ == "__main__":
 
     # Run the Streamlit App defined in the main function
     main()
-    
