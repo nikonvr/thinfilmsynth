@@ -159,7 +159,7 @@ def calculate_mse_for_optimization_penalized(ep_vector, nH, nL, nSub, l_vec_opti
     below_min_mask = ep_vector < min_thickness_phys_nm
     penalty = 0.0
     if np.any(below_min_mask):
-        thickness_penalty = 1e6 + np.sum((min_thickness_phys_nm - ep_vector[below_min_mask])**2) * 1e8 # Reduced for debug
+        thickness_penalty = 1e6 + np.sum((min_thickness_phys_nm - ep_vector[below_min_mask])**2) * 1e8
         penalty += thickness_penalty
         if debug_log: log_message(f"[DEBUG COST] Thickness penalty: {thickness_penalty:.4e}. Violated: {np.array2string(ep_vector[below_min_mask], precision=4)}")
     res = None; nan_penalty = 0.0
@@ -167,7 +167,7 @@ def calculate_mse_for_optimization_penalized(ep_vector, nH, nL, nSub, l_vec_opti
         nH_complex = nH + 0j if isinstance(nH, (int, float)) else nH; nL_complex = nL + 0j if isinstance(nL, (int, float)) else nL; nSub_complex = nSub + 0j if isinstance(nSub, (int, float)) else nSub
         res = calculate_RT_from_ep(ep_vector_calc, nH_complex, nL_complex, nSub_complex, l_vec_optim)
         if res is None or 'Ts' not in res or np.any(~np.isfinite(res['Ts'])):
-             nan_penalty = 1e5 # Reduced for debug
+             nan_penalty = 1e5
              penalty += nan_penalty
              if debug_log: log_message(f"[DEBUG COST] NaN detected! NaN penalty: {nan_penalty:.4e}. Returning cost: {penalty:.4e}")
              return penalty
@@ -361,11 +361,98 @@ def _process_optimization_results(local_results_raw, initial_best_ep, initial_be
          else: log_with_elapsed_time("Falling back to initial state."); overall_best_ep = initial_best_ep.copy(); overall_best_cost = initial_best_cost; overall_best_result_obj = OptimizeResult(x=overall_best_ep, fun=overall_best_cost, success=False, message="Fell back to initial", nit=0)
     return overall_best_ep, overall_best_cost, overall_best_result_obj
 
-# --- Streamlit UI and Logic --- (Includes State Init)
-st.set_page_config(layout="wide")
-st.title("Thin Film Stack Optimizer (Streamlit v2.25-DBG)")
+def setup_axis_grids(ax):
+    ax.grid(which='major', color='grey', linestyle='-', linewidth=0.7, alpha=0.7)
+    ax.grid(which='minor', color='lightgrey', linestyle=':', linewidth=0.5, alpha=0.5)
+    ax.minorticks_on()
 
-if 'log_messages' not in st.session_state: st.session_state.log_messages = []
+def tracer_graphiques(res, ep_actual, nH_r, nH_i, nL_r, nL_i, nSub, active_targets_for_plot, mse, is_optimized=False, method_name="", res_optim_grid=None):
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    opt_method_str = f" ({method_name})" if method_name else ""
+    window_title = f'Stack Results{opt_method_str}' if is_optimized else 'Nominal Stack Calculation Results'
+    fig.suptitle(window_title, fontsize=14, weight='bold')
+    num_layers = len(ep_actual) if ep_actual is not None else 0
+    ep_cum = np.cumsum(ep_actual) if num_layers > 0 else np.array([])
+    ax_spec = axes[0]
+    if res and 'l' in res and 'Ts' in res and res['l'] is not None and res['Ts'] is not None:
+        line_ts, = ax_spec.plot(res['l'], res['Ts'], label='Transmittance (Plot Grid)', linestyle='-', color='blue', linewidth=1.5)
+        target_lines_drawn = False
+        if active_targets_for_plot:
+            plotted_label = False
+            for target in active_targets_for_plot:
+                l_min, l_max = target['min'], target['max']; t_min, t_max = target['target_min'], target['target_max']
+                x_coords = [l_min, l_max]; y_coords = [t_min, t_max]
+                label = 'Target Ramp' if not plotted_label else "_nolegend_"; ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.5, alpha=0.8, label=label, zorder=5)
+                plotted_label = True; ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=8, linestyle='none', label='_nolegend_', zorder=6)
+                if res_optim_grid and 'l' in res_optim_grid and res_optim_grid['l'].size > 0 and 'Ts' in res_optim_grid:
+                    indices_in_zone_optim = np.where((res_optim_grid['l'] >= l_min) & (res_optim_grid['l'] <= l_max))[0]
+                    if indices_in_zone_optim.size > 0:
+                        optim_lambdas_in_zone = res_optim_grid['l'][indices_in_zone_optim]
+                        if abs(l_max - l_min) < 1e-9: optim_target_t_in_zone = np.full_like(optim_lambdas_in_zone, t_min)
+                        else: slope = (t_max - t_min) / (l_max - l_min); optim_target_t_in_zone = t_min + slope * (optim_lambdas_in_zone - l_min)
+                        ax_spec.plot(optim_lambdas_in_zone, optim_target_t_in_zone, marker='.', color='red', linestyle='none', markersize=4, alpha=0.7, label='_nolegend_', zorder=6)
+            target_lines_drawn = True
+        ax_spec.set_xlabel("Wavelength (nm)"); ax_spec.set_ylabel('Transmittance'); ax_spec.set_title(f"Spectral Plot{opt_method_str}")
+        setup_axis_grids(ax_spec); ax_spec.set_ylim(bottom=-0.05, top=1.05)
+        if len(res['l']) > 0: ax_spec.set_xlim(res['l'][0], res['l'][-1])
+        if target_lines_drawn or ax_spec.get_legend_handles_labels()[1]: ax_spec.legend(fontsize=9)
+        if mse is not None and not np.isnan(mse): mse_text = f"MSE (vs Target, Optim grid) = {mse:.3e}"
+        elif mse is None and active_targets_for_plot: mse_text = "MSE: Calculation Error"
+        elif mse is None: mse_text = "MSE: N/A (no target)"
+        else: mse_text = "MSE: N/A (no target points)"
+        ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9, bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
+    else: ax_spec.text(0.5, 0.5, "No spectral data available", ha='center', va='center', transform=ax_spec.transAxes); ax_spec.set_title(f"Spectral Plot{opt_method_str}")
+    ax_idx = axes[1]; nSub_c = nSub + 0j; nH_c_calc = nH_r + 1j * nH_i; nL_c_calc = nL_r + 1j * nL_i
+    indices_complex = [nH_c_calc if i % 2 == 0 else nL_c_calc for i in range(num_layers)]; n_real_layers = [np.real(n) for n in indices_complex]
+    total_thickness = ep_cum[-1] if num_layers > 0 else 0; margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
+    x_coords_plot = [-margin]; y_coords_plot = [np.real(nSub_c)]; x_coords_plot.append(0); y_coords_plot.append(np.real(nSub_c))
+    if num_layers > 0:
+        for i in range(num_layers):
+            layer_start_depth = ep_cum[i-1] if i > 0 else 0; layer_end_depth = ep_cum[i]; layer_n_real = n_real_layers[i]
+            x_coords_plot.append(layer_start_depth); y_coords_plot.append(layer_n_real); x_coords_plot.append(layer_end_depth); y_coords_plot.append(layer_n_real)
+        last_layer_end_depth = ep_cum[-1]; x_coords_plot.append(last_layer_end_depth); y_coords_plot.append(1.0); x_coords_plot.append(last_layer_end_depth + margin); y_coords_plot.append(1.0)
+    else: x_coords_plot.append(0); y_coords_plot.append(1.0); x_coords_plot.append(margin); y_coords_plot.append(1.0)
+    ax_idx.plot(x_coords_plot, y_coords_plot, drawstyle='steps-post', label='Real n', color='purple', linewidth=1.5)
+    ax_idx.set_xlabel('Depth (from substrate) (nm)'); ax_idx.set_ylabel("Real part of index (n')"); ax_idx.set_title("Refractive Index Profile")
+    setup_axis_grids(ax_idx); ax_idx.set_xlim(x_coords_plot[0], x_coords_plot[-1])
+    min_n_list = [1.0, np.real(nSub_c)] + n_real_layers; max_n_list = [1.0, np.real(nSub_c)] + n_real_layers
+    min_n = min(min_n_list) if min_n_list else 0.9; max_n = max(max_n_list) if max_n_list else 2.5
+    ax_idx.set_ylim(bottom=min_n - 0.1, top=max_n + 0.1)
+    offset = (max_n - min_n) * 0.05 + 0.02; common_text_opts = {'ha':'center', 'va':'bottom', 'fontsize':8, 'bbox':dict(facecolor='white', alpha=0.6, pad=0.1, edgecolor='none')}
+    ax_idx.text(-margin / 2, np.real(nSub_c) + offset, f"SUBSTRATE\nn={nSub_c.real:.3f}{nSub_c.imag:+.3f}j" if nSub_c.imag != 0 else f"SUBSTRATE\nn={nSub_c.real:.3f}", **common_text_opts)
+    air_x_pos = (total_thickness + margin / 2) if num_layers > 0 else margin / 2; ax_idx.text(air_x_pos, 1.0 + offset, "AIR\nn=1.0", **common_text_opts)
+    ax_stack = axes[2]
+    if num_layers > 0:
+        colors = ['lightblue' if i % 2 == 0 else 'lightcoral' for i in range(num_layers)]; bar_pos = np.arange(num_layers)
+        bars = ax_stack.barh(bar_pos, ep_actual, align='center', color=colors, edgecolor='grey', height=0.8)
+        yticks_labels = []
+        for i, n_comp in enumerate(indices_complex):
+            layer_type = "H" if i % 2 == 0 else "L"; n_str = f"{np.real(n_comp):.3f}"; k_val = np.imag(n_comp)
+            if abs(k_val) > 1e-6: n_str += f"{k_val:+.3f}j"
+            label = f"L{i + 1} ({layer_type}) n={n_str}"; yticks_labels.append(label)
+        ax_stack.set_yticks(bar_pos); ax_stack.set_yticklabels(yticks_labels, fontsize=8); ax_stack.invert_yaxis()
+        max_ep = max(ep_actual) if ep_actual.size > 0 else 1.0; fontsize = max(6, 9 - num_layers // 10)
+        for i, bar in enumerate(bars):
+             e_val = bar.get_width(); ha_pos = 'left' if e_val < max_ep * 0.2 else 'right'
+             x_text_pos = e_val * 1.05 if ha_pos == 'left' else e_val * 0.95; text_color = 'black' if ha_pos == 'left' else 'white'
+             ax_stack.text(x_text_pos, bar.get_y() + bar.get_height() / 2, f"{e_val:.2f} nm", va='center', ha=ha_pos, color=text_color, fontsize=fontsize, weight='bold')
+    else: ax_stack.text(0.5, 0.5, "No layers defined", ha='center', va='center', fontsize=10, color='grey', transform=ax_stack.transAxes); ax_stack.set_yticks([]); ax_stack.set_xticks([])
+    ax_stack.set_xlabel('Thickness (nm)'); stack_title_prefix = f'Optimized Stack{opt_method_str}' if is_optimized else 'Nominal Stack'
+    ax_stack.set_title(f"{stack_title_prefix} ({num_layers} layers)\n(Substrate at bottom -> Air at top)")
+    if num_layers > 0: ax_stack.set_ylim(bottom=num_layers - 0.5, top=-0.5)
+    plt.tight_layout(pad=1.5, rect=[0, 0, 1, 0.95])
+    return fig
+
+default_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
+default_targets = [
+    {'min': "480.0", 'max': "500.0", 'target_min': "0.0", 'target_max': "1.0", 'enabled': True},
+    {'min': "500.0", 'max': "600.0", 'target_min': "1.0", 'target_max': "1.0", 'enabled': True},
+    {'min': "600.0", 'max': "630.0", 'target_min': "1.0", 'target_max': "0.0", 'enabled': True},
+    {'min': "400.0", 'max': "480.0", 'target_min': "0.0", 'target_max': "0.0", 'enabled': True},
+    {'min': "630.0", 'max': "700.0", 'target_min': "0.0", 'target_max': "0.0", 'enabled': True}
+]
+default_optim_params = OPTIMIZATION_MODES[DEFAULT_MODE]
+
 if 'current_optimized_ep' not in st.session_state: st.session_state.current_optimized_ep = None
 if 'optimization_ran_since_nominal_change' not in st.session_state: st.session_state.optimization_ran_since_nominal_change = False
 if 'optim_start_time' not in st.session_state: st.session_state.optim_start_time = None
@@ -378,6 +465,9 @@ if 'thinnest_layer_display' not in st.session_state: st.session_state.thinnest_l
 if 'optimized_qwot_display' not in st.session_state: st.session_state.optimized_qwot_display = ""
 if 'targets' not in st.session_state: st.session_state.targets = copy.deepcopy(default_targets)
 
+st.set_page_config(layout="wide")
+st.title("Thin Film Stack Optimizer (Streamlit v2.25-DBG)")
+
 col1, col2 = st.columns(2)
 with col1:
     with st.expander("Materials and Substrate", expanded=True):
@@ -389,8 +479,8 @@ with col1:
         with c2: st.number_input("Material L (k imag)", min_value=0.0, value=0.0, step=0.001, format="%.4f", key='nL_i')
         with c2: st.caption("(n = n' + ik)")
     with st.expander("Stack (Nominal Definition)", expanded=True):
-        st.text_area("Nominal Structure (QWOT Multipliers, comma-separated)", value=default_qwot, key='emp_str_input')
-        st.number_input("Centering λ (QWOT, nm)", min_value=0.1, value=500.0, step=1.0, format="%.1f", key='l0_input')
+        st.text_area("Nominal Structure (QWOT Multipliers, comma-separated)", value=st.session_state.get('emp_str_input', default_qwot), key='emp_str_input')
+        st.number_input("Centering λ (QWOT, nm)", min_value=0.1, value=st.session_state.get('l0_input', 500.0), step=1.0, format="%.1f", key='l0_input')
         st.text_input("Optimized QWOT (Read-only)", value=st.session_state.optimized_qwot_display, disabled=True, key='opt_qwot_ro')
 with col2:
     with st.expander("Calculation & Optimization Parameters", expanded=True):
@@ -398,14 +488,14 @@ with col2:
         st.session_state.optim_mode = st.session_state.optim_mode_radio
         selected_params = OPTIMIZATION_MODES[st.session_state.optim_mode]; st.markdown("---")
         c1, c2, c3 = st.columns(3)
-        with c1: st.number_input("λ Start (nm)", min_value=0.1, value=400.0, step=1.0, format="%.1f", key='l_range_deb_input')
-        with c2: st.number_input("λ End (nm)", min_value=0.1, value=700.0, step=1.0, format="%.1f", key='l_range_fin_input')
-        with c3: st.number_input("λ Step (nm, Optim Grid)", min_value=0.01, value=10.0, step=0.1, format="%.2f", key='l_step_input'); st.caption("Plot uses λ Step / 10")
+        with c1: st.number_input("λ Start (nm)", min_value=0.1, value=st.session_state.get('l_range_deb_input', 400.0), step=1.0, format="%.1f", key='l_range_deb_input')
+        with c2: st.number_input("λ End (nm)", min_value=0.1, value=st.session_state.get('l_range_fin_input', 700.0), step=1.0, format="%.1f", key='l_range_fin_input')
+        with c3: st.number_input("λ Step (nm, Optim Grid)", min_value=0.01, value=st.session_state.get('l_step_input', 10.0), step=0.1, format="%.2f", key='l_step_input'); st.caption("Plot uses λ Step / 10")
         c1, c2, c3 = st.columns(3)
-        with c1: st.text_input("N Samples (Sobol)", value=selected_params['n_samples'], key='n_samples_input')
-        with c2: st.text_input("P Starts (L-BFGS-B)", value=selected_params['p_best'], key='p_best_input')
-        with c3: st.text_input("Optim Passes", value=selected_params['n_passes'], key='n_passes_input')
-        st.number_input("Scaling (nm, Pass 2+)", min_value=0.0, value=10.0, step=0.1, format="%.2f", key='scaling_nm_input')
+        with c1: st.text_input("N Samples (Sobol)", value=st.session_state.get('n_samples_input', selected_params['n_samples']), key='n_samples_input')
+        with c2: st.text_input("P Starts (L-BFGS-B)", value=st.session_state.get('p_best_input', selected_params['p_best']), key='p_best_input')
+        with c3: st.text_input("Optim Passes", value=st.session_state.get('n_passes_input', selected_params['n_passes']), key='n_passes_input')
+        st.number_input("Scaling (nm, Pass 2+)", min_value=0.0, value=st.session_state.get('scaling_nm_input', 10.0), step=0.1, format="%.2f", key='scaling_nm_input')
     with st.expander("Spectral Target (Optimization on Transmittance T)", expanded=True):
         st.caption("Define target transmittance ramps (T vs λ)."); headers = st.columns([0.5, 0.5, 1, 1, 1, 1])
         headers[0].markdown("**Enable**"); headers[1].markdown("**Zone**"); headers[2].markdown("**λ min (nm)**"); headers[3].markdown("**λ max (nm)**"); headers[4].markdown("**T @ λmin**"); headers[5].markdown("**T @ λmax**")
@@ -482,9 +572,7 @@ if opt_button:
             else: scale_factor = 1.8**(pass_num - 2); current_scaling = max(min_scaling_nm, initial_scaling_nm / scale_factor); ep_ref_sobol = ep_ref_for_next_pass
             current_num_layers = len(ep_ref_sobol) if ep_ref_sobol is not None else initial_nominal_layers
             if current_num_layers == 0: raise ValueError("Cannot run Sobol with 0 layers")
-            if pass_num == 1:
-                scale_lower = 0.1; scale_upper = 2.0; ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol); lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped * scale_lower)
-                upper_bounds = ep_ref_clamped * scale_upper; upper_bounds = np.maximum(upper_bounds, lower_bounds + 0.1)
+            if pass_num == 1: scale_lower = 0.1; scale_upper = 2.0; ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol); lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped * scale_lower); upper_bounds = ep_ref_clamped * scale_upper; upper_bounds = np.maximum(upper_bounds, lower_bounds + 0.1)
             else:
                 if ep_ref_sobol is None: raise ValueError("ep_ref_sobol None for Pass > 1"); ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol)
                 lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped - current_scaling); upper_bounds = ep_ref_clamped + current_scaling; upper_bounds = np.maximum(upper_bounds, lower_bounds + 0.1)
@@ -562,19 +650,9 @@ if opt_button:
                 if new_best_found_this_pass: st.session_state.current_status = f"{pass_status_prefix} - Completed. New Best! {status_suffix}"; status_placeholder.info(st.session_state.current_status)
                 else: st.session_state.current_status = f"{pass_status_prefix} - Completed. No improvement. {status_suffix}"; status_placeholder.info(st.session_state.current_status)
             else:
-                # Bloc si la passe a échoué
-                log_with_elapsed_time(f"ERROR: {run_id_str} failed (cost: {cost_this_pass}).")
-                st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"
-                status_placeholder.warning(st.session_state.current_status)
-
-                # --- Correction de l'indentation ici ---
-                if overall_best_ep_final is not None: # Alignée avec les logs/status ci-dessus
-                    log_with_elapsed_time("Continuing with previous best.") # Indentée sous l'if
-                    ep_ref_for_next_pass = overall_best_ep_final.copy() # Indentée sous l'if
-                else: # Alignée avec l'if correspondant
-                    # Indentée sous l'else :
-                    raise RuntimeError(f"{run_id_str} failed and no prior result exists. Aborting.")
-                # --- Fin de la correction ---
+                log_with_elapsed_time(f"ERROR: {run_id_str} failed (cost: {cost_this_pass})."); st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"; status_placeholder.warning(st.session_state.current_status);
+                if overall_best_ep_final is not None: log_with_elapsed_time("Continuing with previous best."); ep_ref_for_next_pass = overall_best_ep_final.copy()
+                else: raise RuntimeError(f"{run_id_str} failed and no prior result exists. Aborting.")
 
         current_progress_step +=1; progress_bar.progress(current_progress_step / progress_max_steps)
         st.session_state.current_status = f"Status: Post-processing (Auto-Remove)... | Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"; status_placeholder.info(st.session_state.current_status)
@@ -612,13 +690,14 @@ if opt_button:
         st.session_state.optimization_ran_since_nominal_change = True
         final_qwot_str = "QWOT Error"
         if overall_best_ep_final is not None and len(overall_best_ep_final) > 0:
-             try: l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']; optimized_qwots = calculate_qwot_from_ep(overall_best_ep_final, l0_val, nH_r_val, nL_r_val)
-                 if np.any(np.isnan(optimized_qwots)):
-                     final_qwot_str = "QWOT N/A (NaN)"
-                     log_message("Warning: Final QWOT calculation resulted in NaN.")
-                 else:
-                     final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
-             except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
+            try:
+                l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']; optimized_qwots = calculate_qwot_from_ep(overall_best_ep_final, l0_val, nH_r_val, nL_r_val)
+                if np.any(np.isnan(optimized_qwots)):
+                    final_qwot_str = "QWOT N/A (NaN)"
+                    log_message("Warning: Final QWOT calculation resulted in NaN.")
+                else:
+                    final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
+            except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
         else: final_qwot_str = "N/A (Empty Structure)"
         st.session_state.optimized_qwot_display = final_qwot_str
         final_method_name = f"{n_passes}-Pass Opt" + (f" + {auto_removed_count} AutoRm" if auto_removed_count > 0 else "")
