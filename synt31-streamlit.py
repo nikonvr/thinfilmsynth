@@ -15,7 +15,6 @@ from functools import partial
 import math
 import copy
 
-# --- Configuration ---
 OPTIMIZATION_MODES = {
     "Slow": {"n_samples": "32768", "p_best": "50", "n_passes": "5"},
     "Medium": {"n_samples": "8192", "p_best": "15", "n_passes": "3"},
@@ -24,7 +23,6 @@ OPTIMIZATION_MODES = {
 DEFAULT_MODE = "Fast"
 MIN_THICKNESS_PHYS_NM = 0.01
 
-# --- Helper Functions ---
 def upper_power_of_2(n):
     if n <= 0: return 1
     exponent = math.floor(math.log2(n))+1
@@ -45,7 +43,6 @@ def log_with_elapsed_time(message):
 def clear_log():
     st.session_state.log_messages = [f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Log cleared."]
 
-# --- Core Calculation Logic ---
 @numba.njit(fastmath=True, cache=True)
 def compute_stack_matrix(ep_vector, l_val, nH_complex, nL_complex):
     M = np.eye(2, dtype=np.complex128)
@@ -175,7 +172,7 @@ def calculate_mse_for_optimization_penalized(ep_vector, nH, nL, nSub, l_vec_opti
              if debug_log: log_message(f"[DEBUG COST] NaN detected! NaN penalty: {nan_penalty:.4e}. Returning cost: {penalty:.4e}")
              return penalty
     except Exception as e_rt:
-        if debug_log: log_message(f"[DEBUG COST] ERROR in calculate_RT_from_ep: {e_rt}")
+        if debug_log: log_message(f"[DEBUG COST] ERROR during calculate_RT_from_ep: {e_rt}")
         return np.inf
     mse = 1e7; total_points_in_targets = 0; total_squared_error = 0.0
     if 'Ts' in res and 'l' in res:
@@ -197,88 +194,41 @@ def calculate_mse_for_optimization_penalized(ep_vector, nH, nL, nSub, l_vec_opti
     if debug_log: log_message(f"[DEBUG COST] Returning final_cost: {final_cost:.4e}")
     return final_cost
 
-def perform_single_thin_layer_removal(ep_vector_in, min_thickness_phys,
-                                      cost_function, args_for_cost,
-                                      log_prefix="", target_layer_index=None):
+def perform_single_thin_layer_removal(ep_vector_in, min_thickness_phys, cost_function, args_for_cost, log_prefix="", target_layer_index=None):
     current_ep = ep_vector_in.copy(); logs = []; num_layers = len(current_ep)
-
-    # --- Basic Check ---
-    if num_layers <= 1: # Need >= 2 layers to potentially remove/merge
+    if num_layers <= 1:
         logs.append(f"{log_prefix}Structure has {num_layers} layers. Cannot merge/delete further.")
-        # Cannot calculate cost if empty, return inf. If 1 layer, calculate its cost.
-        cost = np.inf
-        success = False
+        cost = np.inf; success = False
         if num_layers == 1:
-             try:
-                 cost = cost_function(current_ep, *args_for_cost)
-                 success = np.isfinite(cost)
-             except Exception:
-                 cost = np.inf
-                 success = False
-        return current_ep, success, cost, logs # Return original state
-
-    # --- Identify Layer ---
+             try: cost = cost_function(current_ep, *args_for_cost); success = np.isfinite(cost)
+             except Exception: cost = np.inf; success = False
+        return current_ep, success, cost, logs
     thin_layer_index = -1; min_thickness_found = np.inf
     if target_layer_index is not None:
-        if 0 <= target_layer_index < num_layers:
-            thin_layer_index = target_layer_index; min_thickness_found = current_ep[target_layer_index]
-            logs.append(f"{log_prefix}Targeting layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
-        else:
-            logs.append(f"{log_prefix}Invalid target index {target_layer_index+1}. Finding thinnest."); target_layer_index = None
+        if 0 <= target_layer_index < num_layers: thin_layer_index = target_layer_index; min_thickness_found = current_ep[target_layer_index]; logs.append(f"{log_prefix}Targeting layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
+        else: logs.append(f"{log_prefix}Invalid target index {target_layer_index+1}. Finding thinnest."); target_layer_index = None
     if target_layer_index is None:
         eligible_indices = np.where(current_ep >= min_thickness_phys)[0]
-        if eligible_indices.size > 0:
-            min_idx_within_eligible = np.argmin(current_ep[eligible_indices])
-            thin_layer_index = eligible_indices[min_idx_within_eligible]; min_thickness_found = current_ep[thin_layer_index]
+        if eligible_indices.size > 0: min_idx_within_eligible = np.argmin(current_ep[eligible_indices]); thin_layer_index = eligible_indices[min_idx_within_eligible]; min_thickness_found = current_ep[thin_layer_index]
     if thin_layer_index == -1:
         logs.append(f"{log_prefix}No suitable layer found for removal (thinnest >= {min_thickness_phys:.3f} nm).")
         try: cost = cost_function(current_ep, *args_for_cost); success = np.isfinite(cost)
         except Exception: cost = np.inf; success = False
-        return current_ep, success, cost, logs # Return original state if nothing to remove
+        return current_ep, success, cost, logs
     if target_layer_index is None: logs.append(f"{log_prefix}Identified thinnest eligible layer: {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
-
-    # --- Perform Removal/Merge ---
     ep_after_merge = None; merged_info = ""; structure_changed = False
     if thin_layer_index == 0:
-        if num_layers >= 2:
-            ep_after_merge = current_ep[2:]; merged_info = f"Removing layer 1 & 2."
-            logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-        else:
-            # CORRECTED BLOCK
-            logs.append(f"{log_prefix}Cannot remove layer 1 - structure too small (needs >= 2 layers).")
-            return current_ep, False, np.inf, logs # Return original, indicate failure
-
+        if num_layers >= 2: ep_after_merge = current_ep[2:]; merged_info = f"Removing layer 1 & 2."; logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+        else: logs.append(f"{log_prefix}Cannot remove layer 1 - structure too small."); return current_ep, False, np.inf, logs
     elif thin_layer_index == num_layers - 1:
-        if num_layers >= 1:
-             ep_after_merge = current_ep[:-1]; merged_info = f"Removed last layer {num_layers} ({current_ep[-1]:.3f} nm)."
-             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-        # No else needed, num_layers=0 covered at start
-
-    elif thin_layer_index == 1: # Special case for merging layers 0 and 2 when removing layer 1
-         if num_layers >= 3:
-             merged_thickness = current_ep[0] + current_ep[2]
-             ep_after_merge = np.concatenate(([merged_thickness], current_ep[3:]))
-             merged_info = f"Removed layer 2 (idx 1), merged layer 1({current_ep[0]:.3f}) + 3({current_ep[2]:.3f}) -> {merged_thickness:.3f}"
-             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-         else:
-             # CORRECTED BLOCK
-             logs.append(f"{log_prefix}Cannot remove layer 2 (idx 1) - structure has < 3 layers.")
-             return current_ep, False, np.inf, logs # Return original, indicate failure
-
-    else: # Intermediate layer removal (index > 1 and < num_layers - 1)
-         # This case requires merging layer index-1 and index+1
-         # The original check if num_layers >= 3 was implicitly covered by index range, but good to be explicit
+        if num_layers >= 1: ep_after_merge = current_ep[:-1]; merged_info = f"Removed last layer {num_layers} ({current_ep[-1]:.3f} nm)."; logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+    elif thin_layer_index == 1:
+         if num_layers >= 3: merged_thickness = current_ep[0] + current_ep[2]; ep_after_merge = np.concatenate(([merged_thickness], current_ep[3:])); merged_info = f"Removed layer 2 (idx 1), merged layer 1({current_ep[0]:.3f}) + 3({current_ep[2]:.3f}) -> {merged_thickness:.3f}"; logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+         else: logs.append(f"{log_prefix}Cannot remove layer 2 (idx 1) - structure has < 3 layers."); return current_ep, False, np.inf, logs
+    else:
          if num_layers >= 3 and thin_layer_index > 0 and thin_layer_index < num_layers - 1:
-             merged_thickness = current_ep[thin_layer_index - 1] + current_ep[thin_layer_index + 1]
-             ep_after_merge = np.concatenate((current_ep[:thin_layer_index - 1], [merged_thickness], current_ep[thin_layer_index + 2:]))
-             merged_info = (f"Removed layer {thin_layer_index + 1}, merged {thin_layer_index}({current_ep[thin_layer_index - 1]:.3f}) + {thin_layer_index + 2}({current_ep[thin_layer_index + 1]:.3f}) -> {merged_thickness:.3f}")
-             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-         else:
-             # CORRECTED BLOCK (Handles cases where index might be wrong or layers < 3 unexpectedly)
-             logs.append(f"{log_prefix}Cannot merge around layer {thin_layer_index+1}, invalid index or structure too small.")
-             return current_ep, False, np.inf, logs # Return original, indicate failure
-
-    # --- Re-optimize if structure changed ---
+             merged_thickness = current_ep[thin_layer_index - 1] + current_ep[thin_layer_index + 1]; ep_after_merge = np.concatenate((current_ep[:thin_layer_index - 1], [merged_thickness], current_ep[thin_layer_index + 2:])); merged_info = (f"Removed layer {thin_layer_index + 1}, merged {thin_layer_index}({current_ep[thin_layer_index - 1]:.3f}) + {thin_layer_index + 2}({current_ep[thin_layer_index + 1]:.3f}) -> {merged_thickness:.3f}"); logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+         else: logs.append(f"{log_prefix}Cannot merge around layer {thin_layer_index+1}, invalid index or structure too small."); return current_ep, False, np.inf, logs
     final_ep = current_ep; final_cost = np.inf; success_overall = False
     if structure_changed and ep_after_merge is not None:
         if ep_after_merge.size > 0: ep_after_merge = np.maximum(ep_after_merge, min_thickness_phys)
@@ -304,7 +254,6 @@ def perform_single_thin_layer_removal(ep_vector_in, min_thickness_phys,
         logs.append(f"{log_prefix}Structure not changed. No re-optimization."); success_overall = False; final_ep = current_ep
         try: final_cost = cost_function(final_ep, *args_for_cost); success_overall = np.isfinite(final_cost)
         except Exception: final_cost = np.inf; success_overall = False
-
     return final_ep, success_overall, final_cost, logs
 
 def local_search_worker(start_ep, cost_function, args_for_cost, lbfgsb_bounds, min_thickness_phys_nm):
@@ -358,7 +307,7 @@ def _run_sobol_evaluation(num_layers, n_samples, lower_bounds, upper_bounds, cos
         for i, cand in enumerate(ep_candidates):
             try: cost = cost_function_partial_map(cand); costs.append(cost)
             except Exception: costs.append(np.inf)
-            if (i + 1) % 200 == 0 or i == len(ep_candidates) - 1: log_with_elapsed_time(f"    Evaluated {i + 1}/{n_samples} sequentially..."); #if progress_hook: progress_hook((i + 1) / n_samples)
+            if (i + 1) % 200 == 0 or i == len(ep_candidates) - 1: log_with_elapsed_time(f"    Evaluated {i + 1}/{n_samples} sequentially...");
         eval_seq_time = time.time() - eval_start_seq; initial_results = list(zip(costs, ep_candidates)); log_with_elapsed_time(f"  Sequential evaluation finished in {eval_seq_time:.2f}s.")
     valid_initial_results = [(c, p) for c, p in initial_results if np.isfinite(c) and c < 1e9]
     num_invalid = len(initial_results) - len(valid_initial_results)
@@ -412,7 +361,7 @@ def _process_optimization_results(local_results_raw, initial_best_ep, initial_be
          else: log_with_elapsed_time("Falling back to initial state."); overall_best_ep = initial_best_ep.copy(); overall_best_cost = initial_best_cost; overall_best_result_obj = OptimizeResult(x=overall_best_ep, fun=overall_best_cost, success=False, message="Fell back to initial", nit=0)
     return overall_best_ep, overall_best_cost, overall_best_result_obj
 
-# --- Streamlit UI and Logic ---
+# --- Streamlit UI and Logic --- (Includes State Init)
 st.set_page_config(layout="wide")
 st.title("Thin Film Stack Optimizer (Streamlit v2.25-DBG)")
 
@@ -432,7 +381,7 @@ if 'targets' not in st.session_state: st.session_state.targets = copy.deepcopy(d
 col1, col2 = st.columns(2)
 with col1:
     with st.expander("Materials and Substrate", expanded=True):
-        c1, c2 = st.columns(2)
+        c1, c2 = st.columns(2);
         with c1: st.number_input("Material H (n real)", min_value=0.01, value=2.35, step=0.01, format="%.3f", key='nH_r')
         with c1: st.number_input("Material L (n real)", min_value=0.01, value=1.46, step=0.01, format="%.3f", key='nL_r')
         with c1: st.number_input("Substrate (n real)", min_value=0.01, value=1.52, step=0.01, format="%.3f", key='nSub')
@@ -447,8 +396,7 @@ with col2:
     with st.expander("Calculation & Optimization Parameters", expanded=True):
         st.radio("Optimization Mode Preset", options=list(OPTIMIZATION_MODES.keys()), index=list(OPTIMIZATION_MODES.keys()).index(st.session_state.optim_mode), key='optim_mode_radio', horizontal=True)
         st.session_state.optim_mode = st.session_state.optim_mode_radio
-        selected_params = OPTIMIZATION_MODES[st.session_state.optim_mode]
-        st.markdown("---")
+        selected_params = OPTIMIZATION_MODES[st.session_state.optim_mode]; st.markdown("---")
         c1, c2, c3 = st.columns(3)
         with c1: st.number_input("λ Start (nm)", min_value=0.1, value=400.0, step=1.0, format="%.1f", key='l_range_deb_input')
         with c2: st.number_input("λ End (nm)", min_value=0.1, value=700.0, step=1.0, format="%.1f", key='l_range_fin_input')
@@ -459,8 +407,7 @@ with col2:
         with c3: st.text_input("Optim Passes", value=selected_params['n_passes'], key='n_passes_input')
         st.number_input("Scaling (nm, Pass 2+)", min_value=0.0, value=10.0, step=0.1, format="%.2f", key='scaling_nm_input')
     with st.expander("Spectral Target (Optimization on Transmittance T)", expanded=True):
-        st.caption("Define target transmittance ramps (T vs λ).")
-        headers = st.columns([0.5, 0.5, 1, 1, 1, 1])
+        st.caption("Define target transmittance ramps (T vs λ)."); headers = st.columns([0.5, 0.5, 1, 1, 1, 1])
         headers[0].markdown("**Enable**"); headers[1].markdown("**Zone**"); headers[2].markdown("**λ min (nm)**"); headers[3].markdown("**λ max (nm)**"); headers[4].markdown("**T @ λmin**"); headers[5].markdown("**T @ λmax**")
         for i in range(len(st.session_state.targets)):
             cols = st.columns([0.5, 0.5, 1, 1, 1, 1]); target_state = st.session_state.targets[i]
@@ -472,9 +419,7 @@ with col2:
 st.markdown("---")
 status_placeholder = st.empty()
 progress_placeholder = st.empty()
-
 st.checkbox("Run Single Verbose L-BFGS-B Debug", key="debug_lbfgsb_run", value=False)
-
 action_cols = st.columns([1, 1, 1.5, 1.5, 1])
 calc_button = action_cols[0].button("Calculate Nominal", key="calc_nom", use_container_width=True)
 opt_button = action_cols[1].button("Optimize N Passes", key="opt", use_container_width=True)
@@ -486,16 +431,11 @@ with action_cols[3]:
     set_nominal_enabled = (st.session_state.current_optimized_ep is not None and len(st.session_state.current_optimized_ep) > 0 and st.session_state.optimization_ran_since_nominal_change)
     set_nominal_button = st.button("Set Current as Nominal", key="set_nom", disabled=not set_nominal_enabled, use_container_width=True)
     st.info(st.session_state.num_layers_display)
-
 log_expander = st.expander("Log Messages")
 with log_expander:
     if st.button("Clear Log", key="clear_log_btn"): clear_log(); st.rerun()
-    log_content = "\n".join(st.session_state.log_messages)
-    st.text_area("Log", value=log_content, height=300, key="log_display_area", disabled=True)
-
-st.markdown("---")
-st.subheader("Results")
-plot_placeholder = st.empty()
+    log_content = "\n".join(st.session_state.log_messages); st.text_area("Log", value=log_content, height=300, key="log_display_area", disabled=True)
+st.markdown("---"); st.subheader("Results"); plot_placeholder = st.empty()
 
 if calc_button:
     st.session_state.current_optimized_ep = None; st.session_state.optimization_ran_since_nominal_change = False; st.session_state.optimized_qwot_display = ""
@@ -511,49 +451,43 @@ if opt_button:
         inputs = _validate_physical_inputs_from_state(require_optim_params=True)
         n_samples = inputs['n_samples']; initial_p_best = inputs['p_best']; n_passes = inputs['n_passes']; initial_scaling_nm = inputs['scaling_nm']
         progress_max_steps = (3 if n_passes >= 1 else 0) + max(0, (n_passes - 1) * 2) + 1; current_progress_step = 0
-        active_targets = get_active_targets_from_state()
-        if active_targets is None: raise ValueError("Failed to retrieve/validate spectral targets.")
-        if not active_targets: raise ValueError("No active spectral targets defined. Optimization requires at least one target.")
+        active_targets = get_active_targets_from_state();
+        if active_targets is None: raise ValueError("Failed targets.");
+        if not active_targets: raise ValueError("No active targets defined.");
         log_with_elapsed_time(f"{len(active_targets)} active target zone(s) found.")
         nH_complex_nom = inputs['nH_r'] + 1j*inputs['nH_i']; nL_complex_nom = inputs['nL_r'] + 1j*inputs['nL_i']
         ep_nominal_glob, _ = get_initial_ep(inputs['emp_str'], inputs['l0'], nH_complex_nom, nL_complex_nom)
-        if ep_nominal_glob.size == 0: raise ValueError("Initial nominal QWOT stack is empty or invalid.")
+        if ep_nominal_glob.size == 0: raise ValueError("Initial nominal QWOT stack is empty.")
         initial_nominal_layers = len(ep_nominal_glob)
         last_successful_ep = ep_nominal_glob.copy(); overall_best_ep_final = last_successful_ep.copy(); ep_ref_for_next_pass = None; overall_best_layers = initial_nominal_layers
         try:
             nSub_c = inputs['nSub'] + 0j; l_min_overall = inputs['l_range_deb']; l_max_overall = inputs['l_range_fin']; l_step_gui = inputs['l_step']
             num_points_approx = max(2, int(np.round((l_max_overall - l_min_overall) / l_step_gui)) + 1)
             l_vec_optim_init = np.geomspace(l_min_overall, l_max_overall, num_points_approx); l_vec_optim_init = l_vec_optim_init[(l_vec_optim_init > 0) & np.isfinite(l_vec_optim_init)]
-            if l_vec_optim_init.size == 0: raise ValueError("Failed to create optim vec for initial cost.")
+            if l_vec_optim_init.size == 0: raise ValueError("Failed optim vec for initial cost.")
             initial_nominal_cost = calculate_mse_for_optimization_penalized(ep_nominal_glob, nH_complex_nom, nL_complex_nom, nSub_c, l_vec_optim_init, active_targets, MIN_THICKNESS_PHYS_NM, debug_log=False)
             overall_best_cost_final = initial_nominal_cost if np.isfinite(initial_nominal_cost) else np.inf
             log_with_elapsed_time(f"Initial nominal cost: {overall_best_cost_final:.3e}, Layers: {initial_nominal_layers}")
             st.session_state.current_status = f"Status: Initial | Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"; status_placeholder.info(st.session_state.current_status)
         except Exception as e_init_cost:
-            log_with_elapsed_time(f"Warning: Could not calculate initial nominal cost: {e_init_cost}"); overall_best_cost_final = np.inf
+            log_with_elapsed_time(f"Warning: Could not calculate initial cost: {e_init_cost}"); overall_best_cost_final = np.inf
             st.session_state.current_status = f"Status: Initial | Best MSE: N/A | Layers: {initial_nominal_layers}"; status_placeholder.warning(st.session_state.current_status)
         l_vec_optim = l_vec_optim_init
-
         for pass_num in range(1, n_passes + 1):
             run_id_str = f"Pass {pass_num}/{n_passes}"; pass_status_prefix = f"Status: {run_id_str}"; status_suffix = f"| Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
             st.session_state.current_status = f"{pass_status_prefix} - Starting... {status_suffix}"; status_placeholder.info(st.session_state.current_status); progress_bar.progress( current_progress_step / progress_max_steps )
             reduction_factor = 0.8 ** (pass_num - 1); p_best_for_this_pass = max(2, int(np.round(initial_p_best * reduction_factor)))
             current_scaling = None; ep_ref_sobol = None
-            if pass_num == 1: current_scaling = None; ep_ref_sobol = ep_nominal_glob # Base Pass 1 Sobol on nominal
+            if pass_num == 1: current_scaling = None; ep_ref_sobol = ep_nominal_glob
             else: scale_factor = 1.8**(pass_num - 2); current_scaling = max(min_scaling_nm, initial_scaling_nm / scale_factor); ep_ref_sobol = ep_ref_for_next_pass
             current_num_layers = len(ep_ref_sobol) if ep_ref_sobol is not None else initial_nominal_layers
             if current_num_layers == 0: raise ValueError("Cannot run Sobol with 0 layers")
-
             if pass_num == 1:
-                scale_lower = 0.1; scale_upper = 2.0; ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol)
-                lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped * scale_lower)
+                scale_lower = 0.1; scale_upper = 2.0; ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol); lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped * scale_lower)
                 upper_bounds = ep_ref_clamped * scale_upper; upper_bounds = np.maximum(upper_bounds, lower_bounds + 0.1)
             else:
-                if ep_ref_sobol is None: raise ValueError("ep_ref_sobol cannot be None for Pass > 1")
-                ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol)
-                lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped - current_scaling)
-                upper_bounds = ep_ref_clamped + current_scaling; upper_bounds = np.maximum(upper_bounds, lower_bounds + 0.1)
-
+                if ep_ref_sobol is None: raise ValueError("ep_ref_sobol None for Pass > 1"); ep_ref_clamped = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_sobol)
+                lower_bounds = np.maximum(MIN_THICKNESS_PHYS_NM, ep_ref_clamped - current_scaling); upper_bounds = ep_ref_clamped + current_scaling; upper_bounds = np.maximum(upper_bounds, lower_bounds + 0.1)
             args_for_cost_tuple_sobol = (inputs['nH_r'] + 1j*inputs['nH_i'], inputs['nL_r'] + 1j*inputs['nL_i'], inputs['nSub'] + 0j, l_vec_optim, active_targets, MIN_THICKNESS_PHYS_NM, False)
             cost_function_partial_map = partial(calculate_mse_for_optimization_penalized, nH=args_for_cost_tuple_sobol[0], nL=args_for_cost_tuple_sobol[1], nSub=args_for_cost_tuple_sobol[2], l_vec_optim=args_for_cost_tuple_sobol[3], active_targets=args_for_cost_tuple_sobol[4], min_thickness_phys_nm=args_for_cost_tuple_sobol[5], debug_log=args_for_cost_tuple_sobol[6])
             valid_initial_results_p1 = _run_sobol_evaluation(current_num_layers, n_samples, lower_bounds, upper_bounds, cost_function_partial_map, MIN_THICKNESS_PHYS_NM, phase_name=f"{run_id_str} Phase 1")
@@ -561,7 +495,7 @@ if opt_button:
             if pass_num == 1:
                 status_placeholder.info(f"{pass_status_prefix} - Phase 1bis (Refining Starts) {status_suffix}"); log_with_elapsed_time(f"\n--- {run_id_str} Phase 1bis: Refining Top P Starts ---")
                 num_to_select_p1 = min(p_best_for_this_pass, len(valid_initial_results_p1))
-                if num_to_select_p1 == 0: log_with_elapsed_time("WARNING: Phase 1 yielded no valid starting points. Skipping refinement."); top_p_results_combined = []
+                if num_to_select_p1 == 0: log_with_elapsed_time("WARNING: No valid points. Skipping refinement."); top_p_results_combined = []
                 else:
                     top_p_results_p1 = valid_initial_results_p1[:num_to_select_p1]; top_p_starts_p1 = [ep for cost, ep in top_p_results_p1]
                     phase1bis_scaling = 10.0; n_samples_per_point_raw = max(1, n_samples // p_best_for_this_pass) if p_best_for_this_pass > 0 else n_samples
@@ -571,25 +505,24 @@ if opt_button:
                         lower_bounds_1bis = np.maximum(MIN_THICKNESS_PHYS_NM, ep_start - phase1bis_scaling); upper_bounds_1bis = ep_start + phase1bis_scaling; upper_bounds_1bis = np.maximum(upper_bounds_1bis, lower_bounds_1bis + 0.1)
                         sampler_1bis = qmc.Sobol(d=current_num_layers, scramble=True, seed=int(time.time()) + i); points_unit_1bis = sampler_1bis.random(n=n_samples_per_point)
                         new_candidates = qmc.scale(points_unit_1bis, lower_bounds_1bis, upper_bounds_1bis); new_candidates = [np.maximum(MIN_THICKNESS_PHYS_NM, cand) for cand in new_candidates]; phase1bis_candidates.extend(new_candidates)
-                    log_with_elapsed_time(f"  Generated {len(phase1bis_candidates)} total candidates for Phase 1bis eval.")
+                    log_with_elapsed_time(f"  Generated {len(phase1bis_candidates)} candidates for 1bis eval.")
                     costs_1bis = []; results_1bis_raw_pairs = []; num_workers_1bis = min(len(phase1bis_candidates), os.cpu_count())
-                    log_with_elapsed_time(f"  Evaluating cost for {len(phase1bis_candidates)} Phase 1bis candidates (max {num_workers_1bis} workers)..."); eval_start_pool_1bis = time.time()
+                    log_with_elapsed_time(f"  Evaluating {len(phase1bis_candidates)} 1bis candidates (max {num_workers_1bis} workers)..."); eval_start_pool_1bis = time.time()
                     try:
                         if phase1bis_candidates:
                             with multiprocessing.Pool(processes=num_workers_1bis) as pool: costs_1bis = pool.map(cost_function_partial_map, phase1bis_candidates)
-                            eval_pool_time_1bis = time.time() - eval_start_pool_1bis; log_with_elapsed_time(f"  Parallel eval (Phase 1bis) finished in {eval_pool_time_1bis:.2f}s.")
+                            eval_pool_time_1bis = time.time() - eval_start_pool_1bis; log_with_elapsed_time(f"  Parallel eval (1bis) finished in {eval_pool_time_1bis:.2f}s.")
                             if len(costs_1bis) != len(phase1bis_candidates): costs_1bis = costs_1bis[:len(phase1bis_candidates)]
                             results_1bis_raw_pairs = list(zip(costs_1bis, phase1bis_candidates))
                         else: results_1bis_raw_pairs = []
-                    except Exception as e_pool_1bis: log_with_elapsed_time(f"  ERROR during parallel eval (Phase 1bis): {e_pool_1bis}"); results_1bis_raw_pairs = []
-                    valid_results_1bis = [(c, p) for c, p in results_1bis_raw_pairs if np.isfinite(c) and c < 1e9]
-                    num_invalid_1bis = len(results_1bis_raw_pairs) - len(valid_results_1bis)
-                    if num_invalid_1bis > 0: log_with_elapsed_time(f"  Filtering (Phase 1bis): {num_invalid_1bis} invalid costs discarded.")
+                    except Exception as e_pool_1bis: log_with_elapsed_time(f"  ERROR during parallel eval (1bis): {e_pool_1bis}"); results_1bis_raw_pairs = []
+                    valid_results_1bis = [(c, p) for c, p in results_1bis_raw_pairs if np.isfinite(c) and c < 1e9]; num_invalid_1bis = len(results_1bis_raw_pairs) - len(valid_results_1bis)
+                    if num_invalid_1bis > 0: log_with_elapsed_time(f"  Filtering (1bis): {num_invalid_1bis} invalid costs discarded.")
                     combined_results = top_p_results_p1 + valid_results_1bis; log_with_elapsed_time(f"  Combined Phase 1 ({len(top_p_results_p1)}) + 1bis ({len(valid_results_1bis)}): {len(combined_results)} total.")
-                    if not combined_results: log_with_elapsed_time("WARNING: No valid results after Phase 1bis."); top_p_results_combined = []
-                    else: combined_results.sort(key=lambda x: x[0]); num_to_select_final = min(p_best_for_this_pass, len(combined_results)); log_with_elapsed_time(f"  Selecting final top {num_to_select_final} points for Phase 2."); top_p_results_combined = combined_results[:num_to_select_final]
+                    if not combined_results: log_with_elapsed_time("WARNING: No valid results after 1bis."); top_p_results_combined = []
+                    else: combined_results.sort(key=lambda x: x[0]); num_to_select_final = min(p_best_for_this_pass, len(combined_results)); log_with_elapsed_time(f"  Selecting final top {num_to_select_final} points."); top_p_results_combined = combined_results[:num_to_select_final]
                 log_with_elapsed_time(f"--- End {run_id_str} Phase 1bis ---")
-            else: num_to_select = min(p_best_for_this_pass, len(valid_initial_results_p1)); log_with_elapsed_time(f"  Selecting top {num_to_select} points from Phase 1 for Phase 2."); top_p_results_combined = valid_initial_results_p1[:num_to_select]
+            else: num_to_select = min(p_best_for_this_pass, len(valid_initial_results_p1)); log_with_elapsed_time(f"  Selecting top {num_to_select} points."); top_p_results_combined = valid_initial_results_p1[:num_to_select]
 
             if st.session_state.debug_lbfgsb_run and pass_num == 1 and top_p_results_combined:
                 log_with_elapsed_time("\n--- STARTING SINGLE L-BFGS-B DEBUG RUN ---")
@@ -611,11 +544,11 @@ if opt_button:
                 except Exception: cost_this_pass = np.inf
                 result_obj_this_pass = OptimizeResult(x=ep_this_pass, fun=cost_this_pass, success=False, message=f"Phase 2 skipped - no starts ({run_id_str})", nit=0)
             else:
-                initial_best_ep_for_processing = selected_starts[0].copy(); initial_best_cost_for_processing = selected_costs[0]
+                initial_best_ep_for_processing = selected_starts[0].copy(); initial_best_cost_for_processing = selected_costs[0]; num_layers_local = len(initial_best_ep_for_processing)
                 log_with_elapsed_time(f"  Top {len(selected_starts)} points for Phase 2:");
                 for i in range(min(5, len(selected_starts))): log_with_elapsed_time(f"    Point {i+1}: Cost={selected_costs[i]:.3e}" if np.isfinite(selected_costs[i]) else "inf")
                 if len(selected_starts) > 5: log_with_elapsed_time("    ...")
-                num_layers_local = len(initial_best_ep_for_processing); lbfgsb_bounds = [(MIN_THICKNESS_PHYS_NM, None)] * num_layers_local
+                lbfgsb_bounds = [(MIN_THICKNESS_PHYS_NM, None)] * num_layers_local
                 args_for_cost_tuple_parallel = (inputs['nH_r'] + 1j*inputs['nH_i'], inputs['nL_r'] + 1j*inputs['nL_i'], inputs['nSub'] + 0j, l_vec_optim, active_targets, MIN_THICKNESS_PHYS_NM, False)
                 local_results_raw = _run_parallel_local_search(selected_starts, calculate_mse_for_optimization_penalized, args_for_cost_tuple_parallel, lbfgsb_bounds, MIN_THICKNESS_PHYS_NM)
                 status_placeholder.info(f"{pass_status_prefix} - Processing L-BFGS-B results... {status_suffix}")
@@ -624,30 +557,26 @@ if opt_button:
             current_progress_step += (3 if pass_num == 1 else 2); progress_bar.progress(current_progress_step / progress_max_steps)
             new_best_found_this_pass = False
             if ep_this_pass is not None and ep_this_pass.size > 0 and np.isfinite(cost_this_pass):
-                if cost_this_pass < overall_best_cost_final:
-                    log_with_elapsed_time(f"*** New overall best in {run_id_str}: {cost_this_pass:.3e} (Prev: {overall_best_cost_final:.3e}) ***")
-                    overall_best_cost_final = cost_this_pass; overall_best_ep_final = ep_this_pass.copy(); overall_best_layers = len(overall_best_ep_final); final_successful_result_obj = result_obj_this_pass; new_best_found_this_pass = True
-                ep_ref_for_next_pass = overall_best_ep_final.copy()
-                status_suffix = f"| Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
+                if cost_this_pass < overall_best_cost_final: log_with_elapsed_time(f"*** New overall best in {run_id_str}: {cost_this_pass:.3e} (Prev: {overall_best_cost_final:.3e}) ***"); overall_best_cost_final = cost_this_pass; overall_best_ep_final = ep_this_pass.copy(); overall_best_layers = len(overall_best_ep_final); final_successful_result_obj = result_obj_this_pass; new_best_found_this_pass = True
+                ep_ref_for_next_pass = overall_best_ep_final.copy(); status_suffix = f"| Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
                 if new_best_found_this_pass: st.session_state.current_status = f"{pass_status_prefix} - Completed. New Best! {status_suffix}"; status_placeholder.info(st.session_state.current_status)
                 else: st.session_state.current_status = f"{pass_status_prefix} - Completed. No improvement. {status_suffix}"; status_placeholder.info(st.session_state.current_status)
-            else:
-                log_with_elapsed_time(f"ERROR: {run_id_str} failed (cost: {cost_this_pass})."); st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"; status_placeholder.warning(st.session_state.current_status)
+            else: log_with_elapsed_time(f"ERROR: {run_id_str} failed (cost: {cost_this_pass})."); st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"; status_placeholder.warning(st.session_state.current_status);
                 if overall_best_ep_final is not None: log_with_elapsed_time("Continuing with previous best."); ep_ref_for_next_pass = overall_best_ep_final.copy()
                 else: raise RuntimeError(f"{run_id_str} failed and no prior result exists. Aborting.")
 
         current_progress_step +=1; progress_bar.progress(current_progress_step / progress_max_steps)
         st.session_state.current_status = f"Status: Post-processing (Auto-Remove)... | Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"; status_placeholder.info(st.session_state.current_status)
-        if overall_best_ep_final is None: raise RuntimeError("Optimization finished, but no valid result before post-processing.")
-        log_with_elapsed_time("\n--- Checking for auto thin layer removal (< 1.0 nm) ---")
+        if overall_best_ep_final is None: raise RuntimeError("Opt finished, but no valid result before post-processing.")
+        log_with_elapsed_time("\n--- Checking for automatic thin layer removal (< 1.0 nm) ---")
         auto_removal_threshold = 1.0; max_auto_removals = len(overall_best_ep_final)
         temp_inputs_ar = _validate_physical_inputs_from_state(require_optim_params=False); temp_active_targets_ar = get_active_targets_from_state()
-        if temp_active_targets_ar is None: raise ValueError("Failed targets for auto-removal cost func.")
+        if temp_active_targets_ar is None: raise ValueError("Failed targets for auto-removal.")
         temp_nH_ar = temp_inputs_ar['nH_r'] + 1j * temp_inputs_ar['nH_i']; temp_nL_ar = temp_inputs_ar['nL_r'] + 1j * temp_inputs_ar['nL_i']; temp_nSub_c_ar = temp_inputs_ar['nSub'] + 0j
         temp_l_min_ar = temp_inputs_ar['l_range_deb']; temp_l_max_ar = temp_inputs_ar['l_range_fin']; temp_l_step_ar = temp_inputs_ar['l_step']
         temp_num_pts_ar = max(2, int(np.round((temp_l_max_ar - temp_l_min_ar) / temp_l_step_ar)) + 1)
         temp_l_vec_optim_ar = np.geomspace(temp_l_min_ar, temp_l_max_ar, temp_num_pts_ar); temp_l_vec_optim_ar = temp_l_vec_optim_ar[(temp_l_vec_optim_ar > 0) & np.isfinite(temp_l_vec_optim_ar)]
-        if not temp_l_vec_optim_ar.size: raise ValueError("Failed geomspace AR wavelength vector.")
+        if not temp_l_vec_optim_ar.size: raise ValueError("Failed geomspace AR vector.")
         temp_args_for_cost_ar = (temp_nH_ar, temp_nL_ar, temp_nSub_c_ar, temp_l_vec_optim_ar, temp_active_targets_ar, MIN_THICKNESS_PHYS_NM, False)
         current_ep_for_removal = overall_best_ep_final.copy()
         while auto_removed_count < max_auto_removals:
@@ -673,13 +602,12 @@ if opt_button:
         final_qwot_str = "QWOT Error"
         if overall_best_ep_final is not None and len(overall_best_ep_final) > 0:
              try: l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']; optimized_qwots = calculate_qwot_from_ep(overall_best_ep_final, l0_val, nH_r_val, nL_r_val)
-                 # CORRECT
-        if np.any(np.isnan(optimized_qwots)):
-            final_qwot_str = "QWOT N/A (NaN)"
-            log_message("Warning: Final QWOT calculation resulted in NaN.") # Optionnel: ajouter un log
-        else:
-            final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
-    except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
+                 if np.any(np.isnan(optimized_qwots)):
+                     final_qwot_str = "QWOT N/A (NaN)"
+                     log_message("Warning: Final QWOT calculation resulted in NaN.")
+                 else:
+                     final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
+             except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
         else: final_qwot_str = "N/A (Empty Structure)"
         st.session_state.optimized_qwot_display = final_qwot_str
         final_method_name = f"{n_passes}-Pass Opt" + (f" + {auto_removed_count} AutoRm" if auto_removed_count > 0 else "")
@@ -697,8 +625,7 @@ if opt_button:
         err_msg = f"ERROR (Input/Logic) during optimization: {e}"; log_with_elapsed_time(err_msg); st.error(err_msg); st.session_state.current_status = f"Status: Optimization Failed (Input/Logic Error)"
         status_placeholder.error(st.session_state.current_status); optimization_successful = False; st.session_state.current_optimized_ep = None; st.session_state.optimization_ran_since_nominal_change = False; st.session_state.optimized_qwot_display = "Error Input/Optim Logic"
     except Exception as e:
-        err_msg = f"ERROR (Unexpected) during optimization: {type(e).__name__}: {e}"; tb_msg = traceback.format_exc(); log_with_elapsed_time(err_msg); log_with_elapsed_time(tb_msg); print(err_msg); print(tb_msg); st.error(f"{err_msg}. See log/console for details.")
-        st.session_state.current_status = f"Status: Optimization Failed (Unexpected Error)"; status_placeholder.error(st.session_state.current_status); optimization_successful = False; st.session_state.current_optimized_ep = None; st.session_state.optimization_ran_since_nominal_change = False; st.session_state.optimized_qwot_display = "Optim Error Unexpected"
+        err_msg = f"ERROR (Unexpected) during optimization: {type(e).__name__}: {e}"; tb_msg = traceback.format_exc(); log_with_elapsed_time(err_msg); log_with_elapsed_time(tb_msg); print(err_msg); print(tb_msg); st.error(f"{err_msg}. See log/console."); st.session_state.current_status = f"Status: Optimization Failed (Unexpected Error)"; status_placeholder.error(st.session_state.current_status); optimization_successful = False; st.session_state.current_optimized_ep = None; st.session_state.optimization_ran_since_nominal_change = False; st.session_state.optimized_qwot_display = "Optim Error Unexpected"
     finally: progress_placeholder.empty(); st.session_state.optim_start_time = None; update_display_info(st.session_state.current_optimized_ep if optimization_successful else None); st.rerun()
 
 if remove_button:
@@ -710,7 +637,7 @@ if remove_button:
         try:
             progress_bar.progress(10); inputs = _validate_physical_inputs_from_state(require_optim_params=False); active_targets = get_active_targets_from_state()
             if active_targets is None: raise ValueError("Failed targets for re-optimization.");
-            if not active_targets: raise ValueError("No active targets defined. Cannot re-optimize.")
+            if not active_targets: raise ValueError("No active targets defined.");
             progress_bar.progress(20); nH = inputs['nH_r'] + 1j * inputs['nH_i']; nL = inputs['nL_r'] + 1j * inputs['nL_i']; nSub_c = inputs['nSub'] + 0j
             l_min = inputs['l_range_deb']; l_max = inputs['l_range_fin']; l_step = inputs['l_step']; num_pts = max(2, int(np.round((l_max - l_min) / l_step)) + 1)
             l_vec_optim = np.geomspace(l_min, l_max, num_pts); l_vec_optim = l_vec_optim[(l_vec_optim > 0) & np.isfinite(l_vec_optim)]
@@ -724,7 +651,8 @@ if remove_button:
                 log_message("  Layer removal successful."); st.session_state.current_optimized_ep = new_ep.copy(); removal_successful = True
                 final_qwot_str = "QWOT Error"
                 try: l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']; optimized_qwots = calculate_qwot_from_ep(new_ep, l0_val, nH_r_val, nL_r_val)
-                    if np.any(np.isnan(optimized_qwots)): final_qwot_str = "QWOT N/A (NaN)"; else: final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots]);
+                    if np.any(np.isnan(optimized_qwots)): final_qwot_str = "QWOT N/A (NaN)"
+                    else: final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
                 except Exception as qwot_calc_error: log_message(f"Error calculating QWOTs after removal: {qwot_calc_error}")
                 st.session_state.optimized_qwot_display = final_qwot_str; log_message(f"  Cost after removal/re-opt: {final_cost:.3e}")
                 st.session_state.current_status = f"Status: Layer Removed | MSE: {final_cost:.3e} | Layers: {len(new_ep)}"; status_placeholder.success(st.session_state.current_status)
@@ -744,8 +672,11 @@ if set_nominal_button:
         try:
             inputs = _validate_physical_inputs_from_state(require_optim_params=False); l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']
             optimized_qwots = calculate_qwot_from_ep(current_ep, l0_val, nH_r_val, nL_r_val)
-            if np.any(np.isnan(optimized_qwots)): log_message("Warning: QWOT resulted in NaN."); st.warning("Could not calculate valid QWOT multipliers (NaN). Nominal QWOT field not updated.")
-            else: final_qwot_str = ", ".join([f"{q:.6f}" for q in optimized_qwots]); st.session_state.emp_str_input = final_qwot_str; log_message(f"Nominal QWOT updated: {final_qwot_str}"); st.success("Optimized design set as new Nominal. Optimized state cleared.")
+            if np.any(np.isnan(optimized_qwots)):
+                log_message("Warning: QWOT resulted in NaN."); st.warning("Could not calculate valid QWOT multipliers (NaN). Nominal QWOT field not updated.")
+            else:
+                final_qwot_str = ", ".join([f"{q:.6f}" for q in optimized_qwots]); st.session_state.emp_str_input = final_qwot_str
+                log_message(f"Nominal QWOT updated: {final_qwot_str}"); st.success("Optimized design set as new Nominal. Optimized state cleared.")
             st.session_state.current_optimized_ep = None; st.session_state.optimization_ran_since_nominal_change = False; st.session_state.optimized_qwot_display = ""
             st.session_state.current_status = "Status: Idle (New Nominal Set)"; status_placeholder.info(st.session_state.current_status); update_display_info(None)
         except Exception as e: err_msg = f"ERROR during Set Nominal: {e}"; log_message(err_msg); st.error(f"Error setting nominal: {e}"); st.session_state.current_status = "Status: Set Nominal Failed (Error)"; status_placeholder.error(st.session_state.current_status)
