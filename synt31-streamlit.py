@@ -561,9 +561,20 @@ if opt_button:
                 ep_ref_for_next_pass = overall_best_ep_final.copy(); status_suffix = f"| Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"
                 if new_best_found_this_pass: st.session_state.current_status = f"{pass_status_prefix} - Completed. New Best! {status_suffix}"; status_placeholder.info(st.session_state.current_status)
                 else: st.session_state.current_status = f"{pass_status_prefix} - Completed. No improvement. {status_suffix}"; status_placeholder.info(st.session_state.current_status)
-            else: log_with_elapsed_time(f"ERROR: {run_id_str} failed (cost: {cost_this_pass})."); st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"; status_placeholder.warning(st.session_state.current_status);
-                if overall_best_ep_final is not None: log_with_elapsed_time("Continuing with previous best."); ep_ref_for_next_pass = overall_best_ep_final.copy()
-                else: raise RuntimeError(f"{run_id_str} failed and no prior result exists. Aborting.")
+            else:
+                # Bloc si la passe a échoué
+                log_with_elapsed_time(f"ERROR: {run_id_str} failed (cost: {cost_this_pass}).")
+                st.session_state.current_status = f"{pass_status_prefix} - FAILED. {status_suffix}"
+                status_placeholder.warning(st.session_state.current_status)
+
+                # --- Correction de l'indentation ici ---
+                if overall_best_ep_final is not None: # Alignée avec les logs/status ci-dessus
+                    log_with_elapsed_time("Continuing with previous best.") # Indentée sous l'if
+                    ep_ref_for_next_pass = overall_best_ep_final.copy() # Indentée sous l'if
+                else: # Alignée avec l'if correspondant
+                    # Indentée sous l'else :
+                    raise RuntimeError(f"{run_id_str} failed and no prior result exists. Aborting.")
+                # --- Fin de la correction ---
 
         current_progress_step +=1; progress_bar.progress(current_progress_step / progress_max_steps)
         st.session_state.current_status = f"Status: Post-processing (Auto-Remove)... | Best MSE: {overall_best_cost_final:.3e} | Layers: {overall_best_layers}"; status_placeholder.info(st.session_state.current_status)
