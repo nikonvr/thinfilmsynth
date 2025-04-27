@@ -673,7 +673,12 @@ if opt_button:
         final_qwot_str = "QWOT Error"
         if overall_best_ep_final is not None and len(overall_best_ep_final) > 0:
              try: l0_val = inputs['l0']; nH_r_val = inputs['nH_r']; nL_r_val = inputs['nL_r']; optimized_qwots = calculate_qwot_from_ep(overall_best_ep_final, l0_val, nH_r_val, nL_r_val)
-                 if np.any(np.isnan(optimized_qwots)): final_qwot_str = "QWOT N/A (NaN)"; else: final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots]);
+                 # CORRECT
+        if np.any(np.isnan(optimized_qwots)):
+            final_qwot_str = "QWOT N/A (NaN)"
+            log_message("Warning: Final QWOT calculation resulted in NaN.") # Optionnel: ajouter un log
+        else:
+        final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
              except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
         else: final_qwot_str = "N/A (Empty Structure)"
         st.session_state.optimized_qwot_display = final_qwot_str
