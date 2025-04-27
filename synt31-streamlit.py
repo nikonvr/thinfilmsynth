@@ -485,7 +485,59 @@ def _validate_physical_inputs_from_state(require_optim_params=True):
     if 'l_range_fin' in values and 'l_range_deb' in values and values['l_range_fin'] < values['l_range_deb']: raise ValueError(f"λ End ({values['l_range_fin']}) must be >= λ Start ({values['l_range_deb']}).")
     if require_optim_params and 'p_best' in values and 'n_samples' in values and values['p_best'] > values['n_samples']: raise ValueError(f"P Starts ({values['p_best']}) must be <= N Samples ({values['n_samples']}).")
     return values
+def get_active_targets_from_state():
+    active_targets = []
+    if 'targets' not in st.session_state:
+        log_message("ERROR: Target definitions not found in session state.")
+        st.error("Target definitions not found in session state.")
+        return None
 
+    overall_lambda_min = None
+    overall_lambda_max = None
+
+    for i, target_def in enumerate(st.session_state.targets):
+        if target_def.get('enabled', False):
+            try:
+                l_min_str = target_def.get('min', '')
+                l_max_str = target_def.get('max', '')
+                t_min_str = target_def.get('target_min', '')
+                t_max_str = target_def.get('target_max', '')
+
+                if not all([l_min_str, l_max_str, t_min_str, t_max_str]):
+                    raise ValueError(f"Target Zone {i+1}: Required fields missing.")
+
+                l_min = float(l_min_str)
+                l_max = float(l_max_str)
+                t_min = float(t_min_str)
+                t_max = float(t_max_str)
+
+                if l_max < l_min: raise ValueError(f"Target Zone {i+1}: λ max ({l_max}) must be >= λ min ({l_min}).")
+                if not (0.0 <= t_min <= 1.0): raise ValueError(f"Target Zone {i+1}: Target T @ min ({t_min}) must be between 0 and 1.")
+                if not (0.0 <= t_max <= 1.0): raise ValueError(f"Target Zone {i+1}: Target T @ max ({t_max}) must be between 0 and 1.")
+                if l_min <=0 or l_max <=0: raise ValueError(f"Target Zone {i+1}: Wavelengths ({l_min}, {l_max}) must be > 0.")
+
+                active_targets.append({'min': l_min, 'max': l_max, 'target_min': t_min, 'target_max': t_max})
+
+                if overall_lambda_min is None or l_min < overall_lambda_min: overall_lambda_min = l_min
+                if overall_lambda_max is None or l_max > overall_lambda_max: overall_lambda_max = l_max
+
+            except (ValueError, TypeError) as e:
+                log_message(f"ERROR Spectral Target Configuration {i+1}: {e}")
+                st.error(f"Error in Spectral Target Zone {i+1}: {e}")
+                return None
+
+    try:
+        # Use the correct keys from st.number_input
+        calc_l_min = float(st.session_state.l_range_deb_input)
+        calc_l_max = float(st.session_state.l_range_fin_input)
+        if overall_lambda_min is not None and overall_lambda_max is not None:
+            if overall_lambda_min < calc_l_min or overall_lambda_max > calc_l_max:
+                st.warning(f"Calculation range [{calc_l_min:.1f}-{calc_l_max:.1f} nm] does not fully cover active target range [{overall_lambda_min:.1f}-{overall_lambda_max:.1f} nm]. Results might be suboptimal.")
+    except (ValueError, KeyError):
+        st.warning("Could not validate target range against calculation range due to invalid/missing range inputs.")
+    except Exception as e:
+        st.warning(f"Error during target/calculation range check: {e}")
+    return active_targets
 def run_calculation_st(ep_vector_to_use=None, is_optimized=False, method_name="", l_vec_override=None):
     log_message(f"\n{'='*20} Starting {'Optimized' if is_optimized else 'Nominal'} Calculation {'('+method_name+')' if method_name else ''} {'='*20}")
     st.session_state.current_status = f"Status: Running {'Optimized' if is_optimized else 'Nominal'} Calculation..."
