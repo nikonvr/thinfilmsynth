@@ -646,7 +646,7 @@ def local_search_worker(
     worker_pid = os.getpid()
     start_time = time.time()
     log_lines: List[str] = []
-    log_lines.append(f"  [PID:{worker_pid} Start]: Starting local search (L-BFGS-B only).")
+    log_lines.append(f"  [PID:{worker_pid} Start]: Starting local search.") # Simplified start message
 
     initial_cost: float = np.inf
     start_ep_checked: np.ndarray = np.array([])
@@ -659,54 +659,73 @@ def local_search_worker(
              raise ValueError(f"Start EP is invalid (shape: {start_ep_local.shape}).")
         start_ep_checked = np.maximum(start_ep_local, min_thickness_phys_nm)
 
+        # *** ADD LOG: START EP INFO ***
+        ep_preview = ", ".join([f"{x:.3f}" for x in start_ep_checked[:5]])
+        if len(start_ep_checked) > 5: ep_preview += "..."
+        log_lines.append(f"  [PID:{worker_pid} Prep]: Start EP (checked, first 5): [{ep_preview}]")
+
         if len(lbfgsb_bounds) != len(start_ep_checked):
             raise ValueError(f"Dimension mismatch: start_ep ({len(start_ep_checked)}) vs bounds ({len(lbfgsb_bounds)})")
 
+        # *** ADD LOG BEFORE COST CALC ***
+        log_lines.append(f"  [PID:{worker_pid} Prep]: Calculating initial cost...")
         initial_cost = cost_function(start_ep_checked, *args_for_cost)
-        # No longer check finiteness here, do it below before calling minimize
+        log_lines.append(f"  [PID:{worker_pid} Prep]: Initial cost = {initial_cost:.6e}")
+
 
     except Exception as e:
-        log_lines.append(f"  [PID:{worker_pid} Start]: ERROR preparing/calculating initial cost: {type(e).__name__}: {e}")
+        log_lines.append(f"  [PID:{worker_pid} ERROR Prep]: Preparing/calculating initial cost failed: {type(e).__name__}: {e}")
         result = OptimizeResult(x=start_ep, success=False, fun=np.inf, message=f"Worker Initial Cost Error: {e}", nit=0)
         end_time = time.time()
         worker_summary = f"Worker {worker_pid} finished in {end_time - start_time:.2f}s. StartCost=ERROR, FinalCost=inf, Success=False, Msg='Initial Cost Error'"
         log_lines.append(f"  [PID:{worker_pid} Summary]: {worker_summary}")
         return {'result': result, 'final_ep': start_ep, 'final_cost': np.inf, 'success': False, 'start_ep': start_ep, 'pid': worker_pid, 'log_lines': log_lines, 'initial_cost': np.inf}
 
-    # *** Check if initial cost is finite before attempting minimization ***
     if not np.isfinite(initial_cost):
-         log_lines.append(f"  [PID:{worker_pid} Check]: Initial cost calculation resulted in {initial_cost}. Aborting minimize.")
+         log_lines.append(f"  [PID:{worker_pid} Check]: Initial cost is {initial_cost}. Aborting minimize call.")
          result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message="Initial cost was non-finite", nit=0)
     else:
         # --- Run the optimization ONLY if initial cost is finite ---
         try:
-            # Use options with explicit 'eps'
+            # *** ADD LOG BEFORE MINIMIZE CALL ***
+            log_lines.append(f"  [PID:{worker_pid} Minimize]: Calling scipy.optimize.minimize (L-BFGS-B)...")
+            minimize_start_time = time.time()
+
             result = minimize(
                 cost_function, start_ep_checked, args=args_for_cost,
                 method='L-BFGS-B', bounds=lbfgsb_bounds,
                 options=LBFGSB_WORKER_OPTIONS,
             )
-            iter_count = result.nit if hasattr(result, 'nit') else 0
+
+            minimize_duration = time.time() - minimize_start_time
+            # *** ADD LOG AFTER MINIMIZE CALL ***
+            minimize_success = getattr(result, 'success', 'N/A')
+            minimize_nit = getattr(result, 'nit', 'N/A')
+            minimize_fun = getattr(result, 'fun', 'N/A')
+            log_lines.append(f"  [PID:{worker_pid} Minimize]: Minimize call returned after {minimize_duration:.3f}s. Success: {minimize_success}, Iterations: {minimize_nit}, Final Func Val: {minimize_fun}")
+
+            iter_count = result.nit if hasattr(result, 'nit') else 0 # Update iter_count
 
             if result.x is not None:
+                # Clamp result *after* optimization finishes
                 result.x = np.maximum(result.x, min_thickness_phys_nm)
+                # Optional: Check if clamping changed the vector significantly
+                # if not np.allclose(result.x, minimize_result_x_before_clamp):
+                #    log_lines.append(f"  [PID:{worker_pid} Debug]: Clamped result vector after optimization.")
 
         except Exception as e:
             end_time = time.time()
-            error_message = f"Worker {worker_pid} Exception during minimize after {end_time-start_time:.2f}s: {type(e).__name__}: {e}"
-            log_lines.append(f"  [PID:{worker_pid} ERROR]: {error_message}\n{traceback.format_exc(limit=2)}")
-            # Preserve start_ep_checked as the result if minimize fails
-            result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message=f"Worker Exception: {e}", nit=iter_count)
+            error_message = f"Worker {worker_pid} Exception during minimize call after {end_time-start_time:.2f}s: {type(e).__name__}: {e}"
+            log_lines.append(f"  [PID:{worker_pid} ERROR Minimize]: {error_message}\n{traceback.format_exc(limit=2)}")
+            result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message=f"Worker Exception during minimize: {e}", nit=iter_count)
 
-    # --- Process results (this part runs regardless) ---
+    # --- Process results ---
     end_time = time.time()
     final_cost_raw = result.fun if hasattr(result, 'fun') else np.inf
-    # Log raw cost before finiteness check for debugging
-    # log_lines.append(f"  [PID:{worker_pid} Debug]: Raw final cost from minimize: {final_cost_raw}")
     final_cost = final_cost_raw if np.isfinite(final_cost_raw) else np.inf
     lbfgsb_success = result.success if hasattr(result, 'success') else False
     success_status = lbfgsb_success and np.isfinite(final_cost)
-    iterations = iter_count # Use iter_count calculated earlier
+    iterations = iter_count
     message_raw = result.message if hasattr(result, 'message') else "No message"
     message = message_raw.decode('utf-8', errors='ignore') if isinstance(message_raw, bytes) else str(message_raw)
 
@@ -723,7 +742,6 @@ def local_search_worker(
     return {'result': result, 'final_ep': final_x, 'final_cost': final_cost,
             'success': success_status, 'start_ep': start_ep, 'pid': worker_pid,
             'log_lines': log_lines, 'initial_cost': initial_cost}
-
 
 def _run_sobol_evaluation(
     num_layers: int,
@@ -833,7 +851,7 @@ def _run_parallel_local_search(
     args_for_cost_tuple: Tuple,
     lbfgsb_bounds: List[Tuple[Optional[float], Optional[float]]],
     min_thickness_phys_nm: float,
-    progress_hook: Optional[Callable[[float], None]] = None
+    progress_hook: Optional[Callable[[float], None]] = None # Progress hook might be hard to implement here
 ) -> List[Dict[str, Any]]:
 
     p_best_actual = len(p_best_starts)
@@ -856,19 +874,28 @@ def _run_parallel_local_search(
     local_start_pool = time.time()
 
     try:
+        # *** ADD LOG BEFORE POOL ***
+        log_with_elapsed_time(f"  Creating multiprocessing Pool with {num_workers_local} workers...")
         with multiprocessing.Pool(processes=num_workers_local) as pool:
+            # *** ADD LOG BEFORE MAP ***
+            log_with_elapsed_time(f"  Submitting {p_best_actual} tasks to pool.map...")
             local_results_raw = list(pool.map(local_search_partial, p_best_starts))
+            # *** ADD LOG AFTER MAP ***
+            log_with_elapsed_time(f"  Pool.map finished. Received {len(local_results_raw)} results.")
+        # *** ADD LOG AFTER POOL CLOSE ***
+        log_with_elapsed_time(f"  Multiprocessing Pool closed.")
+
         local_pool_time = time.time() - local_start_pool
-        log_with_elapsed_time(f"  Parallel local searches finished in {local_pool_time:.2f}s.")
+        log_with_elapsed_time(f"  Parallel local searches task submission and collection finished in {local_pool_time:.2f}s.")
     except Exception as e_pool_local:
         log_with_elapsed_time(f"  ERROR during parallel local search pool execution: {type(e_pool_local).__name__}: {e_pool_local}\n{traceback.format_exc(limit=2)}")
         local_results_raw = []
 
     local_time = time.time() - start_time_local
-    log_with_elapsed_time(f"--- End Phase 2 (Local Search) in {local_time:.2f}s ---")
+    log_with_elapsed_time(f"--- End Phase 2 (Local Search Function) in {local_time:.2f}s ---") # Note: this marks the end of this function, not necessarily the end of all worker execution time if error occurred.
 
     if len(local_results_raw) != p_best_actual:
-         log_with_elapsed_time(f"Warning: Number of local search results ({len(local_results_raw)}) does not match number of starts ({p_best_actual}).")
+         log_with_elapsed_time(f"Warning: Number of local search results ({len(local_results_raw)}) does not match number of starts ({p_best_actual}). Potential worker errors occurred.")
 
     return local_results_raw
 
