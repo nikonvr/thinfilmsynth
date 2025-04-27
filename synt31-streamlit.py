@@ -742,6 +742,7 @@ def local_search_worker(
             'success': success_status, 'start_ep': start_ep, 'pid': worker_pid,
             'log_lines': log_lines, 'initial_cost': initial_cost}
 
+# --- Fonction _run_sobol_evaluation avec logs ajoutés ---
 def _run_sobol_evaluation(
     num_layers: int,
     n_samples: int,
@@ -756,76 +757,93 @@ def _run_sobol_evaluation(
     log_with_elapsed_time(f"\n--- {phase_name}: Initial Evaluation (Sobol, N={n_samples}) ---")
     start_time_eval = time.time()
 
+    # --- Validation des paramètres et ajustement des bornes ---
     if lower_bounds is None or upper_bounds is None or len(lower_bounds) != num_layers or len(upper_bounds) != num_layers:
         raise ValueError(f"_run_sobol_evaluation requires valid bounds matching num_layers ({num_layers}) (phase: {phase_name}).")
     if num_layers == 0:
          log_with_elapsed_time("Warning: Number of layers is 0, cannot run Sobol evaluation.")
          return []
-
     if np.any(lower_bounds > upper_bounds):
         log_with_elapsed_time(f"Warning: Sobol lower bounds > upper bounds found in {phase_name}. Clamping.")
         upper_bounds = np.maximum(lower_bounds, upper_bounds)
     lower_bounds = np.maximum(min_thickness_phys_nm, lower_bounds)
     upper_bounds = np.maximum(lower_bounds + ZERO_THRESHOLD, upper_bounds)
-
     log_with_elapsed_time(f"  Bounds (min={min_thickness_phys_nm:.3f}): L={np.array2string(lower_bounds, precision=3)}, U={np.array2string(upper_bounds, precision=3)}")
 
+    # --- Génération des candidats Sobol ---
     ep_candidates: List[np.ndarray] = []
     if n_samples > 0:
         try:
+            # *** Log avant génération Sobol ***
+            log_with_elapsed_time(f"  Generating {n_samples} Sobol candidates...")
             sampler = qmc.Sobol(d=num_layers, scramble=True)
             points_unit_cube = sampler.random(n=n_samples)
             ep_candidates_raw = qmc.scale(points_unit_cube, lower_bounds, upper_bounds)
             ep_candidates = [np.maximum(min_thickness_phys_nm, cand) for cand in ep_candidates_raw]
+            # *** Log après génération Sobol ***
+            log_with_elapsed_time(f"  Generated {len(ep_candidates)} candidates successfully.")
         except Exception as e_sobol:
-             log_with_elapsed_time(f"Error during Sobol sampling: {type(e_sobol).__name__}: {e_sobol}")
-             return []
+             log_with_elapsed_time(f"  ERROR during Sobol sampling: {type(e_sobol).__name__}: {e_sobol}")
+             return [] # Impossible de continuer sans échantillons
 
     if not ep_candidates:
-        log_with_elapsed_time("  No Sobol candidates generated.")
+        log_with_elapsed_time("  No Sobol candidates to evaluate.")
         return []
 
+    # --- Évaluation parallèle (ou séquentielle si échec) ---
     costs: List[float] = []
     initial_results: List[Tuple[float, np.ndarray]] = []
-    num_workers_eval = min(n_samples, os.cpu_count())
-    log_with_elapsed_time(f"  Evaluating cost (MSE) for {n_samples} candidates (max {num_workers_eval} workers)...")
+    num_workers_eval = min(len(ep_candidates), os.cpu_count()) # Utilise min(N, cpu_count) workers
+    log_with_elapsed_time(f"  Evaluating cost (MSE) for {len(ep_candidates)} candidates (max {num_workers_eval} workers)...")
     eval_start_pool = time.time()
 
     try:
+        # *** Logs ajoutés autour du Pool ***
+        log_with_elapsed_time(f"    Creating multiprocessing Pool with {num_workers_eval} workers for Sobol evaluation...")
         with multiprocessing.Pool(processes=num_workers_eval) as pool:
-            costs = pool.map(cost_function_partial_map, ep_candidates)
+            log_with_elapsed_time(f"    Submitting {len(ep_candidates)} cost function tasks to pool.map...")
+            costs = pool.map(cost_function_partial_map, ep_candidates) # Appel bloquant
+            log_with_elapsed_time(f"    Pool.map finished for Sobol. Received {len(costs)} cost results.")
+        log_with_elapsed_time(f"    Multiprocessing Pool for Sobol closed.")
+
         eval_pool_time = time.time() - eval_start_pool
         log_with_elapsed_time(f"  Parallel evaluation finished in {eval_pool_time:.2f}s.")
 
+        # Vérification de cohérence
         if len(costs) != len(ep_candidates):
             log_with_elapsed_time(f"  Warning: Mismatch in cost results length ({len(costs)}) vs candidates ({len(ep_candidates)}). Truncating.")
             costs = costs[:len(ep_candidates)]
         initial_results = list(zip(costs, ep_candidates))
 
     except Exception as e_pool:
+        # --- Log en cas d'échec du Pool -> passage en séquentiel ---
         log_with_elapsed_time(f"  ERROR during parallel evaluation: {type(e_pool).__name__}: {e_pool}\n{traceback.format_exc(limit=2)}")
         log_with_elapsed_time("  Switching to sequential evaluation...")
         costs = []
         eval_start_seq = time.time()
         total_candidates = len(ep_candidates)
+        log_with_elapsed_time(f"    Starting sequential evaluation for {total_candidates} candidates...") # Log début séquentiel
         for i, cand in enumerate(ep_candidates):
             try:
                 cost = cost_function_partial_map(cand)
                 costs.append(cost)
             except Exception as e_seq:
-                costs.append(np.inf)
-                log_with_elapsed_time(f"  Error evaluating candidate {i+1} sequentially: {e_seq}")
+                costs.append(np.inf) # Coût infini si l'évaluation échoue
+                log_with_elapsed_time(f"    Error evaluating candidate {i+1} sequentially: {e_seq}")
 
-            if (i + 1) % 200 == 0 or i == total_candidates - 1:
-                log_with_elapsed_time(f"  ... Evaluated {i + 1}/{total_candidates} sequentially...")
+            # Log de progression plus fréquent en séquentiel
+            if (i + 1) % 50 == 0 or i == total_candidates - 1: # Log tous les 50 ou à la fin
+                seq_elapsed = time.time() - eval_start_seq
+                log_with_elapsed_time(f"    ... Evaluated {i + 1}/{total_candidates} sequentially ({seq_elapsed:.2f}s elapsed)...")
                 if progress_hook:
                      current_progress = (i + 1) / total_candidates
-                     progress_hook(current_progress)
+                     progress_hook(current_progress) # Mise à jour barre de progression Streamlit
 
         eval_seq_time = time.time() - eval_start_seq
         initial_results = list(zip(costs, ep_candidates))
         log_with_elapsed_time(f"  Sequential evaluation finished in {eval_seq_time:.2f}s.")
 
+    # --- Filtrage et tri des résultats ---
     valid_initial_results = [(c, p) for c, p in initial_results if np.isfinite(c) and c < HIGH_COST_PENALTY]
     num_invalid = len(initial_results) - len(valid_initial_results)
     if num_invalid > 0:
@@ -833,9 +851,9 @@ def _run_sobol_evaluation(
 
     if not valid_initial_results:
         log_with_elapsed_time(f"Warning: No valid initial costs found after {phase_name} evaluation.")
-        return []
+        return [] # Retourne une liste vide si aucun résultat valide
 
-    valid_initial_results.sort(key=lambda x: x[0])
+    valid_initial_results.sort(key=lambda x: x[0]) # Tri par coût croissant
     eval_time = time.time() - start_time_eval
     log_with_elapsed_time(f"--- End {phase_name} (Initial Evaluation) in {eval_time:.2f}s ---")
     if valid_initial_results:
