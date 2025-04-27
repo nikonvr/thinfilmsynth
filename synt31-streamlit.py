@@ -485,6 +485,112 @@ def _validate_physical_inputs_from_state(require_optim_params=True):
     if 'l_range_fin' in values and 'l_range_deb' in values and values['l_range_fin'] < values['l_range_deb']: raise ValueError(f"λ End ({values['l_range_fin']}) must be >= λ Start ({values['l_range_deb']}).")
     if require_optim_params and 'p_best' in values and 'n_samples' in values and values['p_best'] > values['n_samples']: raise ValueError(f"P Starts ({values['p_best']}) must be <= N Samples ({values['n_samples']}).")
     return values
+
+def run_calculation_st(ep_vector_to_use=None, is_optimized=False, method_name="", l_vec_override=None):
+    log_message(f"\n{'='*20} Starting {'Optimized' if is_optimized else 'Nominal'} Calculation {'('+method_name+')' if method_name else ''} {'='*20}")
+    st.session_state.current_status = f"Status: Running {'Optimized' if is_optimized else 'Nominal'} Calculation..."
+    status_placeholder.info(st.session_state.current_status)
+    progress_bar = progress_placeholder.progress(0)
+
+    res_optim_grid = None
+    final_fig = None
+    ep_calculated = None
+    mse_display = np.nan
+
+    try:
+        inputs = _validate_physical_inputs_from_state(require_optim_params=False)
+        active_targets = get_active_targets_from_state()
+        active_targets_for_plot = active_targets if active_targets is not None else []
+
+        ep_source_for_calc = None
+        current_optimized_ep = st.session_state.get('current_optimized_ep')
+        optim_ran = st.session_state.get('optimization_ran_since_nominal_change', False)
+
+        if ep_vector_to_use is not None:
+            ep_source_for_calc = ep_vector_to_use
+        elif current_optimized_ep is not None and optim_ran:
+            ep_source_for_calc = current_optimized_ep
+        else:
+            ep_source_for_calc = None
+
+        nH, nL, nSub_c, l_vec_plot_default, ep_actual_calc, ep_actual_orig = _prepare_calculation_data_st(inputs, ep_vector_to_use=ep_source_for_calc)
+        ep_calculated = ep_actual_orig
+
+        l_vec_final_plot = l_vec_override if l_vec_override is not None else l_vec_plot_default
+
+        log_message("  Calculating T(λ) for plotting...")
+        progress_bar.progress(25)
+        start_rt_time = time.time()
+        res_fine = calculate_RT_from_ep(ep_actual_calc, nH, nL, nSub_c, l_vec_final_plot)
+        rt_time = time.time() - start_rt_time
+        log_message(f"  T calculation (plot) finished in {rt_time:.3f}s.")
+        progress_bar.progress(50)
+
+        if active_targets_for_plot:
+            l_min_overall = inputs['l_range_deb']
+            l_max_overall = inputs['l_range_fin']
+            l_step_gui = inputs['l_step']
+            num_points_approx = max(2, int(np.round((l_max_overall - l_min_overall) / l_step_gui)) + 1)
+            l_vec_optim_display = np.geomspace(l_min_overall, l_max_overall, num_points_approx)
+            l_vec_optim_display = l_vec_optim_display[(l_vec_optim_display > 0) & np.isfinite(l_vec_optim_display)]
+            if l_vec_optim_display.size > 0:
+                 log_message("  Calculating T(λ) on optimization grid for MSE display...")
+                 res_optim_grid = calculate_RT_from_ep(ep_actual_calc, nH, nL, nSub_c, l_vec_optim_display)
+                 log_message("  T calculation (optim grid) finished.")
+                 progress_bar.progress(75)
+                 mse_display, num_pts_mse = calculate_final_mse(res_optim_grid, active_targets_for_plot)
+                 if num_pts_mse > 0: log_message(f"  MSE (display, Optim grid) = {mse_display:.3e} over {num_pts_mse} points.")
+                 else: log_message("  No points found in target zones (Optim grid) to calculate display MSE."); mse_display = np.nan
+            else: log_message("  Optim grid empty, cannot calculate display MSE."); mse_display = np.nan
+        else: log_message("  No active spectral targets, display MSE not calculated.")
+
+        log_message("  Generating plots...")
+        final_fig = tracer_graphiques(res_fine, ep_actual_orig,
+                                     inputs['nH_r'], inputs['nH_i'], inputs['nL_r'], inputs['nL_i'], inputs['nSub'],
+                                     active_targets_for_plot, mse_display,
+                                     is_optimized=is_optimized, method_name=method_name,
+                                     res_optim_grid=res_optim_grid)
+        log_message("  Plot generation finished.")
+        progress_bar.progress(100)
+
+        if is_optimized:
+            st.session_state.optimization_ran_since_nominal_change = True
+            st.session_state.current_optimized_ep = ep_actual_orig.copy() if ep_actual_orig is not None else None
+
+        update_display_info(ep_actual_orig)
+        st.session_state.current_status = f"Status: {'Optimized' if is_optimized else 'Nominal'} Calculation Complete"
+        status_placeholder.success(st.session_state.current_status)
+        log_message(f"--- Finished {'Optimized' if is_optimized else 'Nominal'} Calculation ---")
+
+        st.session_state.last_run_calculation_results = {
+             'res': res_fine, 'ep': ep_actual_orig.copy() if ep_actual_orig is not None else None,
+             'mse': mse_display, 'res_optim_grid': res_optim_grid, 'is_optimized': is_optimized,
+             'method_name': method_name, 'inputs': inputs, 'active_targets': active_targets_for_plot
+        }
+
+    except (ValueError, RuntimeError) as e:
+        err_msg = f"ERROR (Input/Logic) in calculation: {e}"
+        log_message(err_msg); st.error(err_msg)
+        st.session_state.current_status = f"Status: Calculation Failed (Input Error)"
+        status_placeholder.error(st.session_state.current_status)
+        plot_placeholder.empty()
+    except Exception as e:
+        err_msg = f"ERROR (Unexpected) in calculation: {type(e).__name__}: {e}"
+        tb_msg = traceback.format_exc()
+        log_message(err_msg); log_message(tb_msg); print(err_msg); print(tb_msg)
+        st.error(f"{err_msg}. See log/console for details.")
+        st.session_state.current_status = f"Status: Calculation Failed (Unexpected Error)"
+        status_placeholder.error(st.session_state.current_status)
+        plot_placeholder.empty()
+    finally:
+        if final_fig:
+            plot_placeholder.pyplot(final_fig)
+            plt.close(final_fig)
+        else:
+            plot_placeholder.empty()
+        progress_placeholder.empty()
+
+
 def update_display_info(ep_vector_source=None):
     num_layers = 0
     prefix = "Layers (Nominal): "
