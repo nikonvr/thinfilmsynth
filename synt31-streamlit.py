@@ -197,47 +197,95 @@ def calculate_mse_for_optimization_penalized(ep_vector, nH, nL, nSub, l_vec_opti
     if debug_log: log_message(f"[DEBUG COST] Returning final_cost: {final_cost:.4e}")
     return final_cost
 
-def perform_single_thin_layer_removal(ep_vector_in, min_thickness_phys, cost_function, args_for_cost, log_prefix="", target_layer_index=None):
+def perform_single_thin_layer_removal(ep_vector_in, min_thickness_phys,
+                                      cost_function, args_for_cost,
+                                      log_prefix="", target_layer_index=None):
     current_ep = ep_vector_in.copy(); logs = []; num_layers = len(current_ep)
-    if num_layers <= 1:
+
+    # --- Basic Check ---
+    if num_layers <= 1: # Need >= 2 layers to potentially remove/merge
         logs.append(f"{log_prefix}Structure has {num_layers} layers. Cannot merge/delete further.")
-        try: initial_cost = cost_function(current_ep, *args_for_cost); success_overall = np.isfinite(initial_cost)
-        except Exception: initial_cost = np.inf; success_overall = False
-        return current_ep, success_overall, initial_cost, logs
+        # Cannot calculate cost if empty, return inf. If 1 layer, calculate its cost.
+        cost = np.inf
+        success = False
+        if num_layers == 1:
+             try:
+                 cost = cost_function(current_ep, *args_for_cost)
+                 success = np.isfinite(cost)
+             except Exception:
+                 cost = np.inf
+                 success = False
+        return current_ep, success, cost, logs # Return original state
+
+    # --- Identify Layer ---
     thin_layer_index = -1; min_thickness_found = np.inf
     if target_layer_index is not None:
-        if 0 <= target_layer_index < num_layers: thin_layer_index = target_layer_index; min_thickness_found = current_ep[target_layer_index]; logs.append(f"{log_prefix}Targeting layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
-        else: logs.append(f"{log_prefix}Invalid target index {target_layer_index+1}. Finding thinnest."); target_layer_index = None
+        if 0 <= target_layer_index < num_layers:
+            thin_layer_index = target_layer_index; min_thickness_found = current_ep[target_layer_index]
+            logs.append(f"{log_prefix}Targeting layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
+        else:
+            logs.append(f"{log_prefix}Invalid target index {target_layer_index+1}. Finding thinnest."); target_layer_index = None
     if target_layer_index is None:
         eligible_indices = np.where(current_ep >= min_thickness_phys)[0]
-        if eligible_indices.size > 0: min_idx_within_eligible = np.argmin(current_ep[eligible_indices]); thin_layer_index = eligible_indices[min_idx_within_eligible]; min_thickness_found = current_ep[thin_layer_index]
+        if eligible_indices.size > 0:
+            min_idx_within_eligible = np.argmin(current_ep[eligible_indices])
+            thin_layer_index = eligible_indices[min_idx_within_eligible]; min_thickness_found = current_ep[thin_layer_index]
     if thin_layer_index == -1:
         logs.append(f"{log_prefix}No suitable layer found for removal (thinnest >= {min_thickness_phys:.3f} nm).")
-        try: initial_cost = cost_function(current_ep, *args_for_cost); success_overall = np.isfinite(initial_cost)
-        except Exception: initial_cost = np.inf; success_overall = False
-        return current_ep, success_overall, initial_cost, logs
+        try: cost = cost_function(current_ep, *args_for_cost); success = np.isfinite(cost)
+        except Exception: cost = np.inf; success = False
+        return current_ep, success, cost, logs # Return original state if nothing to remove
     if target_layer_index is None: logs.append(f"{log_prefix}Identified thinnest eligible layer: {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
+
+    # --- Perform Removal/Merge ---
     ep_after_merge = None; merged_info = ""; structure_changed = False
     if thin_layer_index == 0:
-        if num_layers >= 2: ep_after_merge = current_ep[2:]; merged_info = f"Removing layer 1 & 2."; logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-        else: logs.append(f"{log_prefix}Cannot remove layer 1, structure too small."); try: cost = cost_function(current_ep, *args_for_cost); success = np.isfinite(cost); except Exception: cost = np.inf; success=False; return current_ep, success, cost, logs
-    elif thin_layer_index == num_layers - 1:
-        if num_layers >= 1: ep_after_merge = current_ep[:-1]; merged_info = f"Removed last layer {num_layers} ({current_ep[-1]:.3f} nm)."; logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-    else:
-        if num_layers >= 3:
-            merged_thickness = current_ep[thin_layer_index - 1] + current_ep[thin_layer_index + 1]
-            ep_after_merge = np.concatenate((current_ep[:thin_layer_index - 1], [merged_thickness], current_ep[thin_layer_index + 2:]))
-            merged_info = (f"Removed layer {thin_layer_index + 1}, merged {thin_layer_index}({current_ep[thin_layer_index - 1]:.3f}) + {thin_layer_index + 2}({current_ep[thin_layer_index + 1]:.3f}) -> {merged_thickness:.3f}")
+        if num_layers >= 2:
+            ep_after_merge = current_ep[2:]; merged_info = f"Removing layer 1 & 2."
             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
-        else: logs.append(f"{log_prefix}Cannot merge around layer {thin_layer_index+1}."); try: cost = cost_function(current_ep, *args_for_cost); success=np.isfinite(cost); except Exception: cost = np.inf; success=False; return current_ep, success, cost, logs
+        else:
+            # CORRECTED BLOCK
+            logs.append(f"{log_prefix}Cannot remove layer 1 - structure too small (needs >= 2 layers).")
+            return current_ep, False, np.inf, logs # Return original, indicate failure
+
+    elif thin_layer_index == num_layers - 1:
+        if num_layers >= 1:
+             ep_after_merge = current_ep[:-1]; merged_info = f"Removed last layer {num_layers} ({current_ep[-1]:.3f} nm)."
+             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+        # No else needed, num_layers=0 covered at start
+
+    elif thin_layer_index == 1: # Special case for merging layers 0 and 2 when removing layer 1
+         if num_layers >= 3:
+             merged_thickness = current_ep[0] + current_ep[2]
+             ep_after_merge = np.concatenate(([merged_thickness], current_ep[3:]))
+             merged_info = f"Removed layer 2 (idx 1), merged layer 1({current_ep[0]:.3f}) + 3({current_ep[2]:.3f}) -> {merged_thickness:.3f}"
+             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+         else:
+             # CORRECTED BLOCK
+             logs.append(f"{log_prefix}Cannot remove layer 2 (idx 1) - structure has < 3 layers.")
+             return current_ep, False, np.inf, logs # Return original, indicate failure
+
+    else: # Intermediate layer removal (index > 1 and < num_layers - 1)
+         # This case requires merging layer index-1 and index+1
+         # The original check if num_layers >= 3 was implicitly covered by index range, but good to be explicit
+         if num_layers >= 3 and thin_layer_index > 0 and thin_layer_index < num_layers - 1:
+             merged_thickness = current_ep[thin_layer_index - 1] + current_ep[thin_layer_index + 1]
+             ep_after_merge = np.concatenate((current_ep[:thin_layer_index - 1], [merged_thickness], current_ep[thin_layer_index + 2:]))
+             merged_info = (f"Removed layer {thin_layer_index + 1}, merged {thin_layer_index}({current_ep[thin_layer_index - 1]:.3f}) + {thin_layer_index + 2}({current_ep[thin_layer_index + 1]:.3f}) -> {merged_thickness:.3f}")
+             logs.append(f"{log_prefix}{merged_info} New: {len(ep_after_merge)} layers."); structure_changed = True
+         else:
+             # CORRECTED BLOCK (Handles cases where index might be wrong or layers < 3 unexpectedly)
+             logs.append(f"{log_prefix}Cannot merge around layer {thin_layer_index+1}, invalid index or structure too small.")
+             return current_ep, False, np.inf, logs # Return original, indicate failure
+
+    # --- Re-optimize if structure changed ---
     final_ep = current_ep; final_cost = np.inf; success_overall = False
     if structure_changed and ep_after_merge is not None:
         if ep_after_merge.size > 0: ep_after_merge = np.maximum(ep_after_merge, min_thickness_phys)
         num_layers_reopt = len(ep_after_merge)
         if num_layers_reopt == 0: logs.append(f"{log_prefix}Empty structure after merge."); return np.array([]), True, np.inf, logs
         reopt_bounds = [(min_thickness_phys, None)] * num_layers_reopt; x0_reopt = ep_after_merge
-        logs.append(f"{log_prefix}Re-optimizing {num_layers_reopt} layers (L-BFGS-B)...")
-        reopt_start_time = time.time(); reopt_args = args_for_cost
+        logs.append(f"{log_prefix}Re-optimizing {num_layers_reopt} layers (L-BFGS-B)..."); reopt_start_time = time.time(); reopt_args = args_for_cost
         try:
             reopt_result = minimize(cost_function, x0_reopt, args=reopt_args, method='L-BFGS-B', bounds=reopt_bounds, options={'maxiter': 199, 'ftol': 1e-10, 'gtol': 1e-7, 'disp': False})
             reopt_time = time.time() - reopt_start_time; reopt_success = reopt_result.success and np.isfinite(reopt_result.fun)
@@ -254,8 +302,9 @@ def perform_single_thin_layer_removal(ep_vector_in, min_thickness_phys, cost_fun
             except Exception: final_cost = np.inf
     else:
         logs.append(f"{log_prefix}Structure not changed. No re-optimization."); success_overall = False; final_ep = current_ep
-        try: final_cost = cost_function(final_ep, *args_for_cost)
-        except Exception: final_cost = np.inf
+        try: final_cost = cost_function(final_ep, *args_for_cost); success_overall = np.isfinite(final_cost)
+        except Exception: final_cost = np.inf; success_overall = False
+
     return final_ep, success_overall, final_cost, logs
 
 def local_search_worker(start_ep, cost_function, args_for_cost, lbfgsb_bounds, min_thickness_phys_nm):
