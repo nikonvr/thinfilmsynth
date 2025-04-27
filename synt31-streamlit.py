@@ -678,8 +678,8 @@ if opt_button:
             final_qwot_str = "QWOT N/A (NaN)"
             log_message("Warning: Final QWOT calculation resulted in NaN.") # Optionnel: ajouter un log
         else:
-        final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
-        except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
+            final_qwot_str = ", ".join([f"{q:.3f}" for q in optimized_qwots])
+            except Exception as qwot_calc_error: log_with_elapsed_time(f"Error calculating final QWOTs: {qwot_calc_error}")
         else: final_qwot_str = "N/A (Empty Structure)"
         st.session_state.optimized_qwot_display = final_qwot_str
         final_method_name = f"{n_passes}-Pass Opt" + (f" + {auto_removed_count} AutoRm" if auto_removed_count > 0 else "")
