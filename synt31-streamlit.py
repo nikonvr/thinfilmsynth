@@ -442,6 +442,50 @@ def tracer_graphiques(res, ep_actual, nH_r, nH_i, nL_r, nL_i, nSub, active_targe
     if num_layers > 0: ax_stack.set_ylim(bottom=num_layers - 0.5, top=-0.5)
     plt.tight_layout(pad=1.5, rect=[0, 0, 1, 0.95])
     return fig
+def _validate_physical_inputs_from_state(require_optim_params=True):
+    values = {}
+    field_map = {
+        'nH_r': ('nH_r', float), 'nH_i': ('nH_i', float),
+        'nL_r': ('nL_r', float), 'nL_i': ('nL_i', float),
+        'nSub': ('nSub', float), 'l0': ('l0_input', float),
+        'l_range_deb': ('l_range_deb_input', float),
+        'l_range_fin': ('l_range_fin_input', float),
+        'l_step': ('l_step_input', float),
+        'scaling_nm': ('scaling_nm_input', float),
+        'emp_str': ('emp_str_input', str)
+    }
+    if require_optim_params:
+        field_map.update({
+            'n_samples': ('n_samples_input', int),
+            'p_best': ('p_best_input', int),
+            'n_passes': ('n_passes_input', int),
+        })
+
+    for target_key, (state_key, field_type) in field_map.items():
+        if state_key not in st.session_state:
+             raise ValueError(f"GUI State Error: Input key '{state_key}' not found in session state. App might need restart.")
+        raw_val = st.session_state[state_key]
+        try:
+            if field_type == str: values[target_key] = str(raw_val).strip()
+            else: values[target_key] = field_type(raw_val)
+
+            if target_key in ['n_samples', 'p_best', 'n_passes'] and values[target_key] < 1: raise ValueError(f"'{target_key}' must be >= 1")
+            if target_key == 'scaling_nm' and values[target_key] < 0: raise ValueError(f"'{target_key}' must be >= 0")
+            if target_key == 'l_step' and values[target_key] <= 0: raise ValueError("λ Step must be > 0.")
+            if target_key == 'l_range_deb' and values[target_key] <= 0: raise ValueError("λ Start must be > 0.")
+            if target_key == 'l0' and values[target_key] <= 0: raise ValueError("Centering λ must be > 0.")
+            if target_key == 'nH_r' and values[target_key] <= 0: raise ValueError("nH_r must be > 0.")
+            if target_key == 'nL_r' and values[target_key] <= 0: raise ValueError("nL_r must be > 0.")
+            if target_key == 'nH_i' and values[target_key] < 0: raise ValueError("nH_i (k) must be >= 0.")
+            if target_key == 'nL_i' and values[target_key] < 0: raise ValueError("nL_i (k) must be >= 0.")
+            if target_key == 'nSub' and values[target_key] <= 0: raise ValueError("nSub must be > 0.")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid value for '{state_key}': '{raw_val}'. Expected: {field_type.__name__}. Error: {e}")
+
+    if 'l_range_fin' in values and 'l_range_deb' in values and values['l_range_fin'] < values['l_range_deb']: raise ValueError(f"λ End ({values['l_range_fin']}) must be >= λ Start ({values['l_range_deb']}).")
+    if require_optim_params and 'p_best' in values and 'n_samples' in values and values['p_best'] > values['n_samples']: raise ValueError(f"P Starts ({values['p_best']}) must be <= N Samples ({values['n_samples']}).")
+    return values
+
 
 default_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
 default_targets = [
