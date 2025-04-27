@@ -642,7 +642,31 @@ def run_calculation_st(ep_vector_to_use=None, is_optimized=False, method_name=""
             plot_placeholder.empty()
         progress_placeholder.empty()
 
+def _prepare_calculation_data_st(inputs, ep_vector_to_use=None):
+    nH = inputs['nH_r'] + 1j * inputs['nH_i']
+    nL = inputs['nL_r'] + 1j * inputs['nL_i']
+    nSub_c = inputs['nSub'] + 0j
+    l_step_gui = inputs['l_step']
 
+    l_step_plot = max(0.01, l_step_gui / 10.0)
+    l_vec_plot = np.arange(inputs['l_range_deb'], inputs['l_range_fin'] + l_step_plot/2.0, l_step_plot)
+    if not l_vec_plot.size: raise ValueError("Spectral range/step yields no calculation points for plotting.")
+
+    if ep_vector_to_use is not None:
+        ep_actual_orig = np.asarray(ep_vector_to_use, dtype=np.float64)
+        # log_message("  Using provided ep_vector for calculation prep.") # Logging removed
+    else:
+        # log_message("  Calculating nominal ep_vector from QWOT string for prep.") # Logging removed
+        try:
+             ep_actual_orig, _ = get_initial_ep(inputs['emp_str'], inputs['l0'], nH, nL)
+        except ValueError as e:
+             raise ValueError(f"Error processing nominal QWOT: {e}")
+
+    if ep_actual_orig.size == 0:
+        if inputs['emp_str'].strip(): raise ValueError("Nominal QWOT provided but resulted in an empty structure.")
+        else: log_message("Empty structure (no QWOT provided). Calculating R/T for bare substrate.")
+    elif not np.all(np.isfinite(ep_actual_orig)):
+        ep_corrected = np.nan_to_num(ep_actual_orig, nan=0.0, posinf=0.0,
 def update_display_info(ep_vector_source=None):
     num_layers = 0
     prefix = "Layers (Nominal): "
