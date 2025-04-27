@@ -659,7 +659,7 @@ def local_search_worker(
              raise ValueError(f"Start EP is invalid (shape: {start_ep_local.shape}).")
         start_ep_checked = np.maximum(start_ep_local, min_thickness_phys_nm)
 
-        # *** ADD LOG: START EP INFO ***
+        # *** Log: Start EP INFO ***
         ep_preview = ", ".join([f"{x:.3f}" for x in start_ep_checked[:5]])
         if len(start_ep_checked) > 5: ep_preview += "..."
         log_lines.append(f"  [PID:{worker_pid} Prep]: Start EP (checked, first 5): [{ep_preview}]")
@@ -667,7 +667,7 @@ def local_search_worker(
         if len(lbfgsb_bounds) != len(start_ep_checked):
             raise ValueError(f"Dimension mismatch: start_ep ({len(start_ep_checked)}) vs bounds ({len(lbfgsb_bounds)})")
 
-        # *** ADD LOG BEFORE COST CALC ***
+        # *** Log avant calcul coût initial ***
         log_lines.append(f"  [PID:{worker_pid} Prep]: Calculating initial cost...")
         initial_cost = cost_function(start_ep_checked, *args_for_cost)
         log_lines.append(f"  [PID:{worker_pid} Prep]: Initial cost = {initial_cost:.6e}")
@@ -681,37 +681,36 @@ def local_search_worker(
         log_lines.append(f"  [PID:{worker_pid} Summary]: {worker_summary}")
         return {'result': result, 'final_ep': start_ep, 'final_cost': np.inf, 'success': False, 'start_ep': start_ep, 'pid': worker_pid, 'log_lines': log_lines, 'initial_cost': np.inf}
 
+    # *** Vérifie si le coût initial est fini avant d'appeler minimize ***
     if not np.isfinite(initial_cost):
          log_lines.append(f"  [PID:{worker_pid} Check]: Initial cost is {initial_cost}. Aborting minimize call.")
          result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message="Initial cost was non-finite", nit=0)
     else:
-        # --- Run the optimization ONLY if initial cost is finite ---
+        # --- Exécute l'optimisation SEULEMENT si le coût initial est fini ---
         try:
-            # *** ADD LOG BEFORE MINIMIZE CALL ***
+            # *** Log avant appel minimize ***
             log_lines.append(f"  [PID:{worker_pid} Minimize]: Calling scipy.optimize.minimize (L-BFGS-B)...")
             minimize_start_time = time.time()
 
+            # Utilise les options incluant 'eps'
             result = minimize(
                 cost_function, start_ep_checked, args=args_for_cost,
                 method='L-BFGS-B', bounds=lbfgsb_bounds,
-                options=LBFGSB_WORKER_OPTIONS,
+                options=LBFGSB_WORKER_OPTIONS, # Utilise les options mises à jour
             )
 
             minimize_duration = time.time() - minimize_start_time
-            # *** ADD LOG AFTER MINIMIZE CALL ***
+            # *** Log apres appel minimize ***
             minimize_success = getattr(result, 'success', 'N/A')
             minimize_nit = getattr(result, 'nit', 'N/A')
             minimize_fun = getattr(result, 'fun', 'N/A')
             log_lines.append(f"  [PID:{worker_pid} Minimize]: Minimize call returned after {minimize_duration:.3f}s. Success: {minimize_success}, Iterations: {minimize_nit}, Final Func Val: {minimize_fun}")
 
-            iter_count = result.nit if hasattr(result, 'nit') else 0 # Update iter_count
+            iter_count = result.nit if hasattr(result, 'nit') else 0 # Met à jour iter_count
 
             if result.x is not None:
-                # Clamp result *after* optimization finishes
+                # Applique la contrainte *après* la fin de l'optimisation
                 result.x = np.maximum(result.x, min_thickness_phys_nm)
-                # Optional: Check if clamping changed the vector significantly
-                # if not np.allclose(result.x, minimize_result_x_before_clamp):
-                #    log_lines.append(f"  [PID:{worker_pid} Debug]: Clamped result vector after optimization.")
 
         except Exception as e:
             end_time = time.time()
@@ -719,7 +718,7 @@ def local_search_worker(
             log_lines.append(f"  [PID:{worker_pid} ERROR Minimize]: {error_message}\n{traceback.format_exc(limit=2)}")
             result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message=f"Worker Exception during minimize: {e}", nit=iter_count)
 
-    # --- Process results ---
+    # --- Traitement des résultats (cette partie s'exécute toujours) ---
     end_time = time.time()
     final_cost_raw = result.fun if hasattr(result, 'fun') else np.inf
     final_cost = final_cost_raw if np.isfinite(final_cost_raw) else np.inf
@@ -874,22 +873,22 @@ def _run_parallel_local_search(
     local_start_pool = time.time()
 
     try:
-        # *** ADD LOG BEFORE POOL ***
+        # *** Log avant création Pool ***
         log_with_elapsed_time(f"  Creating multiprocessing Pool with {num_workers_local} workers...")
         with multiprocessing.Pool(processes=num_workers_local) as pool:
-            # *** ADD LOG BEFORE MAP ***
+            # *** Log avant appel map ***
             log_with_elapsed_time(f"  Submitting {p_best_actual} tasks to pool.map...")
             local_results_raw = list(pool.map(local_search_partial, p_best_starts))
-            # *** ADD LOG AFTER MAP ***
+            # *** Log apres appel map ***
             log_with_elapsed_time(f"  Pool.map finished. Received {len(local_results_raw)} results.")
-        # *** ADD LOG AFTER POOL CLOSE ***
+        # *** Log apres fermeture Pool ***
         log_with_elapsed_time(f"  Multiprocessing Pool closed.")
 
         local_pool_time = time.time() - local_start_pool
         log_with_elapsed_time(f"  Parallel local searches task submission and collection finished in {local_pool_time:.2f}s.")
     except Exception as e_pool_local:
         log_with_elapsed_time(f"  ERROR during parallel local search pool execution: {type(e_pool_local).__name__}: {e_pool_local}\n{traceback.format_exc(limit=2)}")
-        local_results_raw = []
+        local_results_raw = [] # Ensure it's an empty list on error
 
     local_time = time.time() - start_time_local
     log_with_elapsed_time(f"--- End Phase 2 (Local Search Function) in {local_time:.2f}s ---") # Note: this marks the end of this function, not necessarily the end of all worker execution time if error occurred.
