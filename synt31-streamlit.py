@@ -485,7 +485,43 @@ def _validate_physical_inputs_from_state(require_optim_params=True):
     if 'l_range_fin' in values and 'l_range_deb' in values and values['l_range_fin'] < values['l_range_deb']: raise ValueError(f"λ End ({values['l_range_fin']}) must be >= λ Start ({values['l_range_deb']}).")
     if require_optim_params and 'p_best' in values and 'n_samples' in values and values['p_best'] > values['n_samples']: raise ValueError(f"P Starts ({values['p_best']}) must be <= N Samples ({values['n_samples']}).")
     return values
+def update_display_info(ep_vector_source=None):
+    num_layers = 0
+    prefix = "Layers (Nominal): "
+    ep_for_thin_check = None
 
+    is_optimized = st.session_state.get('optimization_ran_since_nominal_change', False)
+    current_opt_ep = st.session_state.get('current_optimized_ep')
+
+    if is_optimized and current_opt_ep is not None:
+        num_layers = len(current_opt_ep)
+        prefix = "Layers (Optimized): "
+        ep_for_thin_check = current_opt_ep
+    elif ep_vector_source is not None:
+        num_layers = len(ep_vector_source)
+        prefix = "Layers (Nominal): "
+        ep_for_thin_check = ep_vector_source
+    else:
+        try:
+            emp_str = st.session_state.get('emp_str_input', '')
+            emp_list = [item for item in emp_str.split(',') if item.strip()]
+            num_layers = len(emp_list)
+            ep_for_thin_check = None
+        except Exception:
+            num_layers = "Error"
+        prefix = "Layers (Nominal): "
+
+    st.session_state.num_layers_display = f"{prefix}{num_layers}"
+
+    min_thickness_str = "- nm"
+    if ep_for_thin_check is not None and len(ep_for_thin_check) > 0:
+        valid_thicknesses = ep_for_thin_check[ep_for_thin_check >= MIN_THICKNESS_PHYS_NM]
+        if valid_thicknesses.size > 0:
+            min_thickness = np.min(valid_thicknesses)
+            min_thickness_str = f"{min_thickness:.3f} nm"
+        else:
+            min_thickness_str = f"None ≥ {MIN_THICKNESS_PHYS_NM} nm"
+    st.session_state.thinnest_layer_display = min_thickness_str
 
 default_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
 default_targets = [
