@@ -37,7 +37,6 @@ except ImportError:
     prange = numba.prange
 
 # --- Constants ---
-# (Constants OPTIMIZATION_MODES, DEFAULT_MODE, MIN_THICKNESS_PHYS_NM etc. restent inchangées)
 OPTIMIZATION_MODES: Dict[str, Dict[str, str]] = {
     "Slow": {"n_samples": "32768", "p_best": "50", "n_passes": "5"},
     "Medium": {"n_samples": "8192", "p_best": "15", "n_passes": "3"},
@@ -62,8 +61,20 @@ PENALTY_BASE: float = 1e6
 PENALTY_FACTOR: float = 1e8
 HIGH_COST_PENALTY: float = 1e8
 HIGH_COST_MSE_ZERO_POINTS: float = 1e7
-LBFGSB_WORKER_OPTIONS: Dict[str, Any] = {'maxiter': 99, 'ftol': 1.e-10, 'gtol': 1e-7, 'disp': False}
-LBFGSB_REOPT_OPTIONS: Dict[str, Any] = {'maxiter': 199, 'ftol': 1e-10, 'gtol': 1e-7, 'disp': False}
+LBFGSB_WORKER_OPTIONS: Dict[str, Any] = {
+    'maxiter': 99,
+    'ftol': 1.e-10,
+    'gtol': 1e-7,
+    'disp': False,
+    'eps': 1.49e-8 # *** Explicit step size for gradient approximation ***
+}
+LBFGSB_REOPT_OPTIONS: Dict[str, Any] = {
+    'maxiter': 199,
+    'ftol': 1e-10,
+    'gtol': 1e-7,
+    'disp': False,
+    'eps': 1.49e-8 # *** Explicit step size for gradient approximation ***
+    }
 PLOT_LAMBDA_STEP_DIVISOR: float = 10.0
 MIN_SCALING_NM: float = 0.1
 AUTO_REMOVE_THRESHOLD_NM: float = 1.0
@@ -73,7 +84,6 @@ PHASE1BIS_SCALING_NM: float = 10.0
 PASS_P_BEST_REDUCTION_FACTOR: float = 0.8
 PASS_SCALING_REDUCTION_BASE: float = 1.8
 
-# --- Default Values for UI Widgets ---
 DEFAULT_NH_R: float = 2.35
 DEFAULT_NH_I: float = 0.0
 DEFAULT_NL_R: float = 1.46
@@ -86,7 +96,6 @@ DEFAULT_L_STEP: float = 10.0
 DEFAULT_SCALING_NM: float = 10.0
 
 # --- Helper Functions ---
-# ... (logging functions, upper_power_of_2 - sans commentaires) ...
 if 'log_messages' not in st.session_state:
     st.session_state.log_messages = []
 
@@ -115,7 +124,6 @@ def upper_power_of_2(n: int) -> int:
     return 1 << exponent
 
 # --- Numba Accelerated Core ---
-# ... (compute_stack_matrix, calculate_RT_from_ep_core, get_target_points_indices - sans commentaires) ...
 @numba.njit(fastmath=True, cache=True)
 def compute_stack_matrix(
     ep_vector: np.ndarray,
@@ -160,7 +168,7 @@ def calculate_RT_from_ep_core(
     etainc = 1.0 + 0j
     etasub = nSub_complex
     real_etasub = np.real(etasub)
-    real_etainc = np.real(etainc)
+    real_etainc = np.real(etainc) # Should be 1.0
 
     for i_l in prange(len(l_vec)):
         l_val = l_vec[i_l]
@@ -168,23 +176,34 @@ def calculate_RT_from_ep_core(
             Rs_arr[i_l], Ts_arr[i_l] = np.nan, np.nan
             continue
 
-        M = compute_stack_matrix(ep_vector, l_val, nH_complex, nL_complex)
-        m00, m01, m10, m11 = M[0, 0], M[0, 1], M[1, 0], M[1, 1]
+        try: # Add inner try-except for potential numerical issues inside loop?
+            M = compute_stack_matrix(ep_vector, l_val, nH_complex, nL_complex)
+            m00, m01, m10, m11 = M[0, 0], M[0, 1], M[1, 0], M[1, 1]
 
-        rs_num = (etainc * m00 - etasub * m11 + etainc * etasub * m01 - m10)
-        rs_den = (etainc * m00 + etasub * m11 + etainc * etasub * m01 + m10)
+            rs_num = (etainc * m00 - etasub * m11 + etainc * etasub * m01 - m10)
+            rs_den = (etainc * m00 + etasub * m11 + etainc * etasub * m01 + m10)
 
-        if np.abs(rs_den) < RT_DENOMINATOR_THRESHOLD:
-            Rs_arr[i_l], Ts_arr[i_l] = np.nan, np.nan
-        else:
-            rs = rs_num / rs_den
-            ts = (2 * etainc) / rs_den
-            Rs_arr[i_l] = np.abs(rs)**2
-            if real_etainc == 0:
-                 Ts_arr[i_l] = np.nan
+            if np.abs(rs_den) < RT_DENOMINATOR_THRESHOLD:
+                Rs_arr[i_l], Ts_arr[i_l] = np.nan, np.nan
             else:
-                 Ts_arr[i_l] = (real_etasub / real_etainc) * np.abs(ts)**2
+                rs = rs_num / rs_den
+                ts = (2 * etainc) / rs_den
+                Rs_arr[i_l] = np.abs(rs)**2
+                # Ensure Ts calculation is robust
+                if real_etainc <= ZERO_THRESHOLD: # Avoid division by zero, though unlikely for air
+                     Ts_arr[i_l] = np.nan
+                else:
+                     Ts_arr[i_l] = (real_etasub / real_etainc) * np.abs(ts)**2
+                     # Check for NaN/inf result in Ts calculation itself
+                     if not np.isfinite(Ts_arr[i_l]): Ts_arr[i_l] = np.nan
 
+        except Exception: # Catch any unexpected error within the loop iteration
+            Rs_arr[i_l], Ts_arr[i_l] = np.nan, np.nan
+
+    # Replace NaN results with 0.0 after the parallel loop
+    # Consider if 0.0 is the best replacement, or if it biases the MSE.
+    # Returning NaN and handling it in the cost function might be better.
+    # Let's keep returning 0.0 for now as per original logic.
     for i in range(len(Rs_arr)):
         if np.isnan(Rs_arr[i]): Rs_arr[i] = 0.0
         if np.isnan(Ts_arr[i]): Ts_arr[i] = 0.0
@@ -198,7 +217,6 @@ def get_target_points_indices(l_vec: np.ndarray, target_min: float, target_max: 
 
 
 # --- Main Calculation & Interface Functions ---
-# ... (calculate_RT_from_ep, calculate_initial_ep, get_initial_ep, calculate_qwot_from_ep - sans commentaires) ...
 def calculate_RT_from_ep(
     ep_vector: Union[np.ndarray, List[float]],
     nH: Union[float, complex],
@@ -216,21 +234,28 @@ def calculate_RT_from_ep(
         l_vec_np = np.ascontiguousarray(l_vec, dtype=np.float64)
 
         if not np.all(np.isfinite(ep_vector_np)):
-             log_message("Warning: Non-finite values found in thickness vector for RT calculation.")
+             # log_message("Warning: Non-finite values found in thickness vector for RT calculation.")
              return None
         if not np.all(np.isfinite(l_vec_np)) or np.any(l_vec_np <= 0):
-              log_message("Warning: Non-finite or non-positive values found in lambda vector for RT calculation.")
+              # log_message("Warning: Non-finite or non-positive values found in lambda vector for RT calculation.")
               return None
         if ep_vector_np.ndim != 1 or l_vec_np.ndim != 1:
-              log_message("Warning: Input vectors must be 1-dimensional for RT calculation.")
+              # log_message("Warning: Input vectors must be 1-dimensional for RT calculation.")
               return None
 
         Rs, Ts = calculate_RT_from_ep_core(ep_vector_np, nH_complex, nL_complex, nSub_complex, l_vec_np)
 
+        # Add check here for NaNs in result?
+        if np.any(~np.isfinite(Rs)) or np.any(~np.isfinite(Ts)):
+             # log_message(f"Warning: calculate_RT_from_ep_core returned non-finite R/T values.")
+             # Decide: return None or return the arrays with NaNs?
+             # Let's return them with NaNs and let the cost function handle it.
+             pass # Keep NaNs for now
+
         return {'l': l_vec_np, 'Rs': Rs, 'Ts': Ts}
 
     except Exception as e:
-        log_message(f"Error during calculate_RT_from_ep: {type(e).__name__}: {e}")
+        # log_message(f"Error during calculate_RT_from_ep: {type(e).__name__}: {e}") # Can be verbose
         return None
 
 def calculate_initial_ep(
@@ -239,7 +264,6 @@ def calculate_initial_ep(
     nH_real: float,
     nL_real: float
 ) -> np.ndarray:
-
     num_layers = len(qwot_multipliers)
     ep_initial = np.zeros(num_layers, dtype=np.float64)
 
@@ -264,7 +288,6 @@ def get_initial_ep(
     nH: Union[float, complex],
     nL: Union[float, complex]
 ) -> Tuple[np.ndarray, List[float]]:
-
     try:
         qwot_multipliers = [float(e.strip()) for e in emp_str.split(',') if e.strip()]
     except ValueError:
@@ -307,9 +330,7 @@ def calculate_qwot_from_ep(
 
     return qwot_multipliers
 
-
 # --- Cost/Objective Functions ---
-# ... (calculate_final_mse, calculate_mse_for_optimization_penalized - sans commentaires) ...
 def calculate_final_mse(
     res: Optional[Dict[str, np.ndarray]],
     active_targets: List[Dict[str, float]]
@@ -335,7 +356,7 @@ def calculate_final_mse(
 
     finite_mask_all = np.isfinite(calculated_Ts)
     if not np.all(finite_mask_all):
-        log_message(f"MSE Calc Warning: Found {np.sum(~finite_mask_all)} non-finite T values.")
+        # log_message(f"MSE Calc Warning: Found {np.sum(~finite_mask_all)} non-finite T values.")
         calculated_lambdas = calculated_lambdas[finite_mask_all]
         calculated_Ts = calculated_Ts[finite_mask_all]
         if calculated_lambdas.size == 0:
@@ -388,25 +409,32 @@ def calculate_mse_for_optimization_penalized(
         ep_vector = np.array(ep_vector, dtype=np.float64)
 
     if ep_vector.ndim != 1:
-        return np.inf
+        # log_message(f"Warning: ep_vector in cost function is not 1D (shape: {ep_vector.shape}).")
+        return np.inf # Return inf for invalid shape
 
-    ep_vector_calc = np.maximum(ep_vector, min_thickness_phys_nm)
+    # Penalty calculated based on input ep_vector
     below_min_mask = ep_vector < min_thickness_phys_nm
     penalty: float = 0.0
     if np.any(below_min_mask):
         penalty = PENALTY_BASE + np.sum((min_thickness_phys_nm - ep_vector[below_min_mask])**2) * PENALTY_FACTOR
 
+    # Calculation uses clamped vector
+    ep_vector_calc = np.maximum(ep_vector, min_thickness_phys_nm)
+
     try:
         res = calculate_RT_from_ep(ep_vector_calc, nH, nL, nSub, l_vec_optim)
 
         if res is None:
-             return np.inf + penalty
+             # RT calculation failed, return high cost + penalty
+             return HIGH_COST_PENALTY + penalty
 
         calculated_lambdas = res['l']
         calculated_Ts = res['Ts']
 
+        # Check for NaNs in the calculation result
         if np.any(~np.isfinite(calculated_Ts)):
-            return HIGH_COST_PENALTY + penalty
+            # log_message(f"Non-finite T values detected for ep={ep_vector[:3]}...") # Potentially verbose
+            return HIGH_COST_PENALTY + penalty # Return high cost if calculation yields NaN
 
         total_squared_error: float = 0.0
         total_points_in_targets: int = 0
@@ -441,18 +469,17 @@ def calculate_mse_for_optimization_penalized(
         final_cost = mse + penalty
 
         if not np.isfinite(final_cost):
-            return np.inf
+            # log_message(f"Warning: Non-finite final_cost ({final_cost}) for ep={ep_vector[:3]}...") # Potentially verbose
+            return np.inf # Ensure finite cost is returned
 
         return final_cost
 
-    except ValueError as ve:
-        return np.inf
-    except Exception as e_rt:
-        return np.inf
+    except Exception as e: # Catch any unexpected error during calculation or processing
+        # log_message(f"Unexpected error in cost function: {type(e).__name__}") # Potentially verbose
+        return np.inf + penalty # Return inf + penalty on error
 
 
 # --- Optimization Logic ---
-# ... (perform_single_thin_layer_removal, local_search_worker, _run_sobol_evaluation, _run_parallel_local_search, _process_optimization_results, run_optimization_process - sans commentaires) ...
 def perform_single_thin_layer_removal(
     ep_vector_in: np.ndarray,
     min_thickness_phys: float,
@@ -461,7 +488,6 @@ def perform_single_thin_layer_removal(
     log_prefix: str = "",
     target_layer_index: Optional[int] = None
 ) -> Tuple[np.ndarray, bool, float, List[str]]:
-
     current_ep = ep_vector_in.copy()
     logs: List[str] = []
     num_layers = len(current_ep)
@@ -637,9 +663,7 @@ def local_search_worker(
             raise ValueError(f"Dimension mismatch: start_ep ({len(start_ep_checked)}) vs bounds ({len(lbfgsb_bounds)})")
 
         initial_cost = cost_function(start_ep_checked, *args_for_cost)
-        if not np.isfinite(initial_cost):
-             log_lines.append(f"  [PID:{worker_pid} Start]: Warning - Initial cost is not finite ({initial_cost:.3e}). Treating as inf.")
-             initial_cost = np.inf
+        # No longer check finiteness here, do it below before calling minimize
 
     except Exception as e:
         log_lines.append(f"  [PID:{worker_pid} Start]: ERROR preparing/calculating initial cost: {type(e).__name__}: {e}")
@@ -649,29 +673,40 @@ def local_search_worker(
         log_lines.append(f"  [PID:{worker_pid} Summary]: {worker_summary}")
         return {'result': result, 'final_ep': start_ep, 'final_cost': np.inf, 'success': False, 'start_ep': start_ep, 'pid': worker_pid, 'log_lines': log_lines, 'initial_cost': np.inf}
 
-    try:
-        result = minimize(
-            cost_function, start_ep_checked, args=args_for_cost,
-            method='L-BFGS-B', bounds=lbfgsb_bounds,
-            options=LBFGSB_WORKER_OPTIONS,
-        )
-        iter_count = result.nit if hasattr(result, 'nit') else 0
+    # *** Check if initial cost is finite before attempting minimization ***
+    if not np.isfinite(initial_cost):
+         log_lines.append(f"  [PID:{worker_pid} Check]: Initial cost calculation resulted in {initial_cost}. Aborting minimize.")
+         result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message="Initial cost was non-finite", nit=0)
+    else:
+        # --- Run the optimization ONLY if initial cost is finite ---
+        try:
+            # Use options with explicit 'eps'
+            result = minimize(
+                cost_function, start_ep_checked, args=args_for_cost,
+                method='L-BFGS-B', bounds=lbfgsb_bounds,
+                options=LBFGSB_WORKER_OPTIONS,
+            )
+            iter_count = result.nit if hasattr(result, 'nit') else 0
 
-        if result.x is not None:
-            result.x = np.maximum(result.x, min_thickness_phys_nm)
+            if result.x is not None:
+                result.x = np.maximum(result.x, min_thickness_phys_nm)
 
-    except Exception as e:
-        end_time = time.time()
-        error_message = f"Worker {worker_pid} Exception during minimize after {end_time-start_time:.2f}s: {type(e).__name__}: {e}"
-        log_lines.append(f"  [PID:{worker_pid} ERROR]: {error_message}\n{traceback.format_exc(limit=2)}")
-        result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message=f"Worker Exception: {e}", nit=iter_count)
+        except Exception as e:
+            end_time = time.time()
+            error_message = f"Worker {worker_pid} Exception during minimize after {end_time-start_time:.2f}s: {type(e).__name__}: {e}"
+            log_lines.append(f"  [PID:{worker_pid} ERROR]: {error_message}\n{traceback.format_exc(limit=2)}")
+            # Preserve start_ep_checked as the result if minimize fails
+            result = OptimizeResult(x=start_ep_checked, success=False, fun=np.inf, message=f"Worker Exception: {e}", nit=iter_count)
 
+    # --- Process results (this part runs regardless) ---
     end_time = time.time()
     final_cost_raw = result.fun if hasattr(result, 'fun') else np.inf
+    # Log raw cost before finiteness check for debugging
+    # log_lines.append(f"  [PID:{worker_pid} Debug]: Raw final cost from minimize: {final_cost_raw}")
     final_cost = final_cost_raw if np.isfinite(final_cost_raw) else np.inf
     lbfgsb_success = result.success if hasattr(result, 'success') else False
     success_status = lbfgsb_success and np.isfinite(final_cost)
-    iterations = iter_count
+    iterations = iter_count # Use iter_count calculated earlier
     message_raw = result.message if hasattr(result, 'message') else "No message"
     message = message_raw.decode('utf-8', errors='ignore') if isinstance(message_raw, bytes) else str(message_raw)
 
@@ -1131,7 +1166,6 @@ def run_optimization_process(
 
 
 # --- Plotting Function ---
-# ... (setup_axis_grids, tracer_graphiques - sans commentaires) ...
 def setup_axis_grids(ax: plt.Axes) -> None:
     ax.grid(which='major', color='grey', linestyle='-', linewidth=0.7, alpha=0.7)
     ax.grid(which='minor', color='lightgrey', linestyle=':', linewidth=0.5, alpha=0.5)
@@ -1317,7 +1351,6 @@ def tracer_graphiques(
     return fig
 
 # --- Streamlit UI and Logic ---
-# ... (get_active_targets_from_state, _validate_physical_inputs_from_state, _prepare_calculation_data_st, update_display_info - sans commentaires) ...
 def get_active_targets_from_state() -> Optional[List[Dict[str, float]]]:
     active_targets: List[Dict[str, float]] = []
     if 'targets' not in st.session_state:
@@ -1360,7 +1393,6 @@ def get_active_targets_from_state() -> Optional[List[Dict[str, float]]]:
                 return None
 
     try:
-        # Use .get() for safer access to session state during validation
         calc_l_min_str = st.session_state.get('l_range_deb_input')
         calc_l_max_str = st.session_state.get('l_range_fin_input')
         if calc_l_min_str is not None and calc_l_max_str is not None:
@@ -1369,8 +1401,6 @@ def get_active_targets_from_state() -> Optional[List[Dict[str, float]]]:
             if overall_lambda_min is not None and overall_lambda_max is not None:
                  if overall_lambda_min < calc_l_min or overall_lambda_max > calc_l_max:
                      st.warning(f"Calculation range [{calc_l_min:.1f}-{calc_l_max:.1f} nm] does not fully cover active target range [{overall_lambda_min:.1f}-{overall_lambda_max:.1f} nm]. Results might be suboptimal or MSE misleading.")
-        # else: # Inputs might not be ready yet, skip warning
-        #    pass
     except (ValueError, TypeError, AttributeError):
          st.warning("Could not validate target range against calculation range due to invalid/missing range inputs.")
     except Exception as e:
@@ -1431,7 +1461,7 @@ def _validate_physical_inputs_from_state(require_optim_params: bool = True) -> D
 
     if 'l_range_fin' in values and 'l_range_deb' in values:
          if values['l_range_fin'] < values['l_range_deb']:
-              error_messages.append(f"λ End ({values['l_range_fin']:.1f}) must be >= λ Start ({values['l_range_deb']:.1f}).") # Use values here
+              error_messages.append(f"λ End ({values['l_range_fin']:.1f}) must be >= λ Start ({values['l_range_deb']:.1f}).")
     if require_optim_params and 'p_best' in values and 'n_samples' in values:
          if values['p_best'] > values['n_samples']:
               error_messages.append(f"P Starts ({values['p_best']}) must be <= N Samples ({values['n_samples']}).")
@@ -1483,6 +1513,7 @@ def _prepare_calculation_data_st(
         ep_actual_calc = ep_actual_orig
 
     return nH, nL, nSub_c, l_vec_plot, ep_actual_calc, ep_actual_orig
+
 
 def update_display_info(ep_vector_source: Optional[np.ndarray] = None) -> None:
     num_layers: Union[int, str] = 0
@@ -1661,7 +1692,7 @@ def run_calculation_st(
         if final_fig and plot_placeholder:
              plot_placeholder.pyplot(final_fig)
              plt.close(final_fig)
-        elif plot_placeholder and 'err_msg' in locals(): # Clear placeholder only if error happened before plot
+        elif plot_placeholder and 'err_msg' in locals():
              plot_placeholder.empty()
 
         if progress_placeholder: progress_placeholder.empty()
@@ -2120,7 +2151,7 @@ def main() -> None:
     global status_placeholder, progress_placeholder, plot_placeholder # Allow modification by action functions
 
     # --- Initialize Session State (if not already set) ---
-    # This block ensures default values are set on the first run
+    # Ensures default values are set on the first run and preserved
     default_ui_values = {
         'nH_r': DEFAULT_NH_R, 'nH_i': DEFAULT_NH_I,
         'nL_r': DEFAULT_NL_R, 'nL_i': DEFAULT_NL_I,
@@ -2145,7 +2176,7 @@ def main() -> None:
         'optimized_qwot_display': ""
     }
     # Set optimization params based on default mode
-    default_params_for_mode = OPTIMIZATION_MODES[DEFAULT_MODE]
+    default_params_for_mode = OPTIMIZATION_MODES.get(DEFAULT_MODE, list(OPTIMIZATION_MODES.values())[0]) # Fallback if default invalid
     default_ui_values['n_samples_input'] = default_params_for_mode['n_samples']
     default_ui_values['p_best_input'] = default_params_for_mode['p_best']
     default_ui_values['n_passes_input'] = default_params_for_mode['n_passes']
@@ -2153,6 +2184,13 @@ def main() -> None:
     for key, value in default_ui_values.items():
         if key not in st.session_state:
             st.session_state[key] = value
+        # Ensure numeric inputs stored as strings are corrected on load if needed
+        # (This is mainly for n_samples, p_best, n_passes if they were ever non-numeric)
+        if key in ['n_samples_input', 'p_best_input', 'n_passes_input']:
+            try:
+                 int(st.session_state[key])
+            except (ValueError, TypeError):
+                 st.session_state[key] = default_params_for_mode[key.replace('_input','')]
 
 
     # --- Page Config ---
@@ -2173,38 +2211,41 @@ def main() -> None:
             with c2:
                 st.number_input("Material H (k imag)", min_value=0.0, value=st.session_state.nH_i, step=0.001, format="%.4f", key='nH_i', help="Imaginary part (k) of high index (>= 0)")
                 st.number_input("Material L (k imag)", min_value=0.0, value=st.session_state.nL_i, step=0.001, format="%.4f", key='nL_i', help="Imaginary part (k) of low index (>= 0)")
-                st.caption("(n = n' + ik', k>=0)")
+                st.caption("(n = n' + ik', k>=0)") # Clarify k represents absorption
 
         with st.expander("Stack (Nominal Definition)", expanded=True):
             st.text_area("Nominal Structure (QWOT Multipliers, comma-separated)", value=st.session_state.emp_str_input, key='emp_str_input', help="Define the starting structure using Quarter-Wave Optical Thickness multipliers relative to λ₀.")
             st.number_input("Centering λ₀ (QWOT, nm)", min_value=0.1, value=st.session_state.l0_input, step=1.0, format="%.1f", key='l0_input', help="Reference wavelength for QWOT calculation (must be > 0).")
+            # Use st.session_state directly for the read-only display
             st.text_input("Optimized QWOT (Read-only)", value=st.session_state.optimized_qwot_display, disabled=True, key='opt_qwot_ro', help="QWOT multipliers of the last successfully optimized structure.")
 
     with col2:
         with st.expander("Calculation & Optimization Parameters", expanded=True):
+            # Use st.session_state.optim_mode to set the index correctly
             optim_mode_options = list(OPTIMIZATION_MODES.keys())
-            # Ensure current mode exists, fallback to default if not
             current_mode = st.session_state.optim_mode if st.session_state.optim_mode in optim_mode_options else DEFAULT_MODE
             current_mode_index = optim_mode_options.index(current_mode)
+
+            # Define callback for radio button to update dependent fields
+            def optim_mode_changed():
+                st.session_state.optim_mode = st.session_state.optim_mode_radio # Update the mode first
+                selected_params = OPTIMIZATION_MODES[st.session_state.optim_mode]
+                # Update the input fields based on the newly selected mode
+                st.session_state.n_samples_input = selected_params['n_samples']
+                st.session_state.p_best_input = selected_params['p_best']
+                st.session_state.n_passes_input = selected_params['n_passes']
 
             st.radio(
                 "Optimization Mode Preset",
                 options=optim_mode_options,
                 index=current_mode_index,
-                key='optim_mode_radio', # Use a distinct key for the widget callback check
+                key='optim_mode_radio',
                 horizontal=True,
+                on_change=optim_mode_changed, # Use callback
                 help="Select preset optimization parameters. Changes update fields below."
             )
-            # Check if the radio button caused the change
-            if st.session_state.optim_mode != st.session_state.optim_mode_radio:
-                 st.session_state.optim_mode = st.session_state.optim_mode_radio
-                 selected_params = OPTIMIZATION_MODES[st.session_state.optim_mode]
-                 st.session_state.n_samples_input = selected_params['n_samples']
-                 st.session_state.p_best_input = selected_params['p_best']
-                 st.session_state.n_passes_input = selected_params['n_passes']
-                 st.rerun()
 
-            st.markdown("---")
+            st.markdown("---") # Separator
 
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -2213,11 +2254,11 @@ def main() -> None:
                 st.number_input("λ End (nm)", min_value=0.1, value=st.session_state.l_range_fin_input, step=1.0, format="%.1f", key='l_range_fin_input', help="End wavelength (must be >= λ Start).")
             with c3:
                 st.number_input("λ Step (nm, Optim Grid)", min_value=0.01, value=st.session_state.l_step_input, step=0.1, format="%.2f", key='l_step_input', help="Wavelength step for optimization cost calculation grid (must be > 0).")
-                st.caption(f"Plot uses λ Step / {PLOT_LAMBDA_STEP_DIVISOR}")
+                st.caption(f"Plot uses λ Step / {PLOT_LAMBDA_STEP_DIVISOR}") # Use constant
 
             c1, c2, c3 = st.columns(3)
             with c1:
-                # Use text_input and validate later, or use number_input if integer expected
+                # Use text_input here as defined previously, relies on validation later
                 st.text_input("N Samples (Sobol)", value=st.session_state.n_samples_input, key='n_samples_input', help="Number of initial Sobol samples per pass (integer >= 1).")
             with c2:
                 st.text_input("P Starts (L-BFGS-B)", value=st.session_state.p_best_input, key='p_best_input', help="Number of best Sobol points to start local search (integer >= 1, <= N Samples).")
@@ -2229,6 +2270,7 @@ def main() -> None:
         with st.expander("Spectral Target (Optimization on Transmittance T)", expanded=True):
             st.caption("Define target transmittance ramps (T vs λ). Optimization minimizes Mean Squared Error (MSE) against active targets using the 'Optim Grid' step.")
 
+            # Header row for targets
             headers = st.columns([0.5, 0.5, 1, 1, 1, 1])
             headers[0].markdown("**Enable**")
             headers[1].markdown("**Zone**")
@@ -2237,20 +2279,21 @@ def main() -> None:
             headers[4].markdown("**T @ λmin**")
             headers[5].markdown("**T @ λmax**")
 
-            active_target_list = []
+            # Display target input rows
+            active_target_list = [] # To check if any are enabled
             for i in range(len(st.session_state.targets)):
                 cols = st.columns([0.5, 0.5, 1, 1, 1, 1])
                 target_state = st.session_state.targets[i]
 
                 # Read directly from session state for display, changes trigger rerun
                 enabled = cols[0].checkbox("", value=target_state['enabled'], key=f"target_{i}_enabled")
-                cols[1].markdown(f"**{i+1}**")
+                cols[1].markdown(f"**{i+1}**") # Display zone number
                 l_min_str = cols[2].text_input("", value=str(target_state['min']), key=f"target_{i}_min", label_visibility="collapsed")
                 l_max_str = cols[3].text_input("", value=str(target_state['max']), key=f"target_{i}_max", label_visibility="collapsed")
                 t_min_str = cols[4].text_input("", value=str(target_state['target_min']), key=f"target_{i}_tmin", label_visibility="collapsed")
                 t_max_str = cols[5].text_input("", value=str(target_state['target_max']), key=f"target_{i}_tmax", label_visibility="collapsed")
 
-                # Update session state (widgets handle this implicitly via their key)
+                # Update the session state for this target directly (widgets handle this implicitly via their key)
                 st.session_state.targets[i]['enabled'] = enabled
                 st.session_state.targets[i]['min'] = l_min_str
                 st.session_state.targets[i]['max'] = l_max_str
@@ -2260,18 +2303,22 @@ def main() -> None:
                 if enabled:
                     active_target_list.append(i)
 
+            # Add button to add/remove targets if needed (more complex UI)
+
     st.markdown("---")
 
-    # Define placeholders here to make them available globally within main's scope
+    # --- Placeholders for dynamic content ---
     status_placeholder = st.empty()
     progress_placeholder = st.empty()
-    plot_placeholder = st.empty()
+    plot_placeholder = st.empty() # Placeholder for the plots
 
-    action_cols = st.columns([1, 1, 1.5, 1.5, 1])
+    # --- Action Buttons ---
+    action_cols = st.columns([1, 1, 1.5, 1.5, 1]) # Adjust column widths as needed
 
     calc_button_pressed = action_cols[0].button("Calculate Nominal", key="calc_nom", use_container_width=True, help="Calculate and plot the spectrum for the nominal QWOT structure defined above.")
     opt_button_pressed = action_cols[1].button("Optimize N Passes", key="opt", use_container_width=True, help="Run the multi-pass optimization process based on the current parameters and active spectral targets.")
 
+    # Determine if remove/set buttons should be enabled
     can_modify_optimized = (st.session_state.current_optimized_ep is not None and
                             len(st.session_state.current_optimized_ep) > 0 and
                             st.session_state.optimization_ran_since_nominal_change)
@@ -2279,12 +2326,15 @@ def main() -> None:
 
     with action_cols[2]:
         remove_button_pressed = st.button("Remove Thinnest Layer", key="remove_thin", disabled=not can_remove_layer, use_container_width=True, help=f"Removes the thinnest layer (≥{MIN_THICKNESS_PHYS_NM}nm) from the current optimized structure and re-optimizes locally (requires ≥ 2 layers).")
+        # Display thinnest layer info using session state variable
         st.info(f"Thinnest ≥ {MIN_THICKNESS_PHYS_NM}nm: {st.session_state.thinnest_layer_display}")
 
     with action_cols[3]:
         set_nominal_button_pressed = st.button("Set Current as Nominal", key="set_nom", disabled=not can_modify_optimized, use_container_width=True, help="Copies the current optimized structure's QWOT multipliers to the 'Nominal Structure' input field.")
+        # Display layer count using session state variable
         st.info(st.session_state.num_layers_display)
 
+    # Log display area
     log_expander = st.expander("Log Messages")
     with log_expander:
         clear_log_pressed = st.button("Clear Log", key="clear_log_btn")
@@ -2293,26 +2343,26 @@ def main() -> None:
 
     st.markdown("---")
     st.subheader("Results")
+    # plot_placeholder defined above
 
     # --- Handle Button Actions ---
+    # The action functions (e.g., run_calculation_st) now handle their own UI updates
+    # and rerun if necessary.
     if calc_button_pressed:
         st.session_state.current_optimized_ep = None
         st.session_state.optimization_ran_since_nominal_change = False
         st.session_state.optimized_qwot_display = ""
         run_calculation_st(ep_vector_to_use=None, is_optimized=False)
-        # run_calculation_st handles plot update and display info
-        # No rerun needed here as run_calculation_st modifies placeholders directly
-        # However, if button states need immediate update, rerun might be useful
-        # Let's keep it simple first.
+        # No rerun needed here typically, run_calculation_st updates placeholders
 
     elif opt_button_pressed:
-        run_optimization_st() # Handles its own rerun
+        run_optimization_st() # Handles rerun internally
 
     elif remove_button_pressed:
-        run_remove_layer_st() # Handles its own rerun
+        run_remove_layer_st() # Handles rerun internally
 
     elif set_nominal_button_pressed:
-        run_set_nominal_st() # Handles its own rerun
+        run_set_nominal_st() # Handles rerun internally
 
     elif clear_log_pressed:
         clear_log()
@@ -2324,7 +2374,6 @@ def main() -> None:
         if last_res_data and isinstance(last_res_data, dict) and last_res_data.get('res') is not None and last_res_data.get('ep') is not None:
             try:
                 required_keys = ['res', 'ep', 'inputs', 'active_targets', 'mse', 'is_optimized', 'method_name', 'res_optim_grid']
-                # Check if the stored result has all necessary components
                 if all(key in last_res_data for key in required_keys) and last_res_data['inputs'] is not None:
                     inputs = last_res_data['inputs']
                     active_targets = last_res_data['active_targets']
@@ -2338,8 +2387,6 @@ def main() -> None:
                     plot_placeholder.pyplot(fig)
                     plt.close(fig)
                 else:
-                    # Don't display info if data is incomplete
-                    # plot_placeholder.info("Previous result data is incomplete. Calculate or Optimize again.")
                     pass
             except Exception as e_plot:
                 st.warning(f"Could not redraw previous plot: {e_plot}")
@@ -2353,26 +2400,26 @@ def main() -> None:
             current_ep_display = st.session_state.current_optimized_ep
         elif st.session_state.get('last_run_calculation_results', {}).get('ep') is not None:
              current_ep_display = st.session_state.last_run_calculation_results['ep']
-        # Update display info (layer count, thinnest) based on current state
         update_display_info(current_ep_display)
 
         # Update status display from session state
         current_status_message = st.session_state.get("current_status", "Status: Idle")
-        if "Failed" in current_status_message or "Error" in current_status_message:
-            status_placeholder.error(current_status_message)
-        elif "Complete" in current_status_message or "Removed" in current_status_message or "Set" in current_status_message or "Successful" in current_status_message :
-            status_placeholder.success(current_status_message)
-        elif "Idle" not in current_status_message: # Show info for running/processing states
-             status_placeholder.info(current_status_message)
-        else: # Clear status placeholder when Idle and nothing running
-            status_placeholder.empty()
+        if status_placeholder: # Check if placeholder exists before using
+            if "Failed" in current_status_message or "Error" in current_status_message:
+                status_placeholder.error(current_status_message)
+            elif "Complete" in current_status_message or "Removed" in current_status_message or "Set" in current_status_message or "Successful" in current_status_message :
+                status_placeholder.success(current_status_message)
+            elif "Idle" not in current_status_message:
+                 status_placeholder.info(current_status_message)
+            else:
+                status_placeholder.empty()
 
 
 # --- Main Execution Guard ---
 if __name__ == "__main__":
     # Setup for Multiprocessing (important for compatibility, especially Windows)
-    # Must be called in the main script scope, not inside a function
     multiprocessing.freeze_support()
 
     # Run the Streamlit App defined in the main function
     main()
+    
