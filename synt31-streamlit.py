@@ -1876,34 +1876,95 @@ with st.sidebar:
                                key="save_opt_btn_sb", disabled=bool(save_error) or (save_data_optimized_dict is None))
 
     # --- Section Matériaux ---
-    with st.expander("🔬 Matériaux et Substrat", expanded=True):
-        mats = st.session_state.get('available_materials', ["Constant"])
-        subs = st.session_state.get('available_substrates', ["Constant", "Fused Silica", "BK7", "D263"])
-        # H
-        try: idx_H = mats.index(st.session_state.selected_H_material)
-        except ValueError: idx_H = 0
-        st.selectbox("Matériau H", mats, index=idx_H, key="selected_H_material", on_change=on_material_change)
-        h_is_const = st.session_state.selected_H_material == "Constant"
-        colH1, colH2 = st.columns(2)
-        with colH1: st.number_input("n' H", value=st.session_state.get('nH_r', 2.35), min_value=0.0, step=0.01, format="%.4f", key="nH_r", disabled=not h_is_const)
-        with colH2: st.number_input("k H", value=st.session_state.get('nH_i', 0.0), min_value=0.0, step=1e-4, format="%.4f", key="nH_i", disabled=not h_is_const)
-        # L
-        try: idx_L = mats.index(st.session_state.selected_L_material)
-        except ValueError: idx_L = 0
-        st.selectbox("Matériau L", mats, index=idx_L, key="selected_L_material", on_change=on_material_change)
-        l_is_const = st.session_state.selected_L_material == "Constant"
-        colL1, colL2 = st.columns(2)
-        with colL1: st.number_input("n' L", value=st.session_state.get('nL_r', 1.46), min_value=0.0, step=0.01, format="%.4f", key="nL_r", disabled=not l_is_const)
-        with colL2: st.number_input("k L", value=st.session_state.get('nL_i', 0.0), min_value=0.0, step=1e-4, format="%.4f", key="nL_i", disabled=not l_is_const)
-        # Substrat
-        try: idx_S = subs.index(st.session_state.selected_Sub_material)
-        except ValueError: idx_S = 0
-        st.selectbox("Substrat", subs, index=idx_S, key="selected_Sub_material", on_change=on_material_change)
-        sub_is_const = st.session_state.selected_Sub_material == "Constant"
-        colS1, colS2 = st.columns([3,1])
-        with colS1: st.number_input("n' Substrat", value=st.session_state.get('nSub', 1.52), min_value=0.0, step=0.01, format="%.4f", key="nSub", disabled=not sub_is_const)
-        with colS2: st.markdown("<p style='font-size:0.75rem; margin-top: 25px; color: gray;'>(n=n'+ik)</p>", unsafe_allow_html=True)
+with st.expander("🔬 Matériaux et Substrat", expanded=True):
+    # Récupérer les listes de matériaux/substrats de manière sûre depuis l'état de session
+    # Fournir une liste par défaut minimale si l'état n'est pas encore initialisé
+    mats = st.session_state.get('available_materials', ["Constant"])
+    subs = st.session_state.get('available_substrates', ["Constant", "Fused Silica", "BK7", "D263"])
 
+    # --- Matériau H ---
+    # Récupérer la sélection actuelle de manière sûre
+    selected_h = st.session_state.get('selected_H_material', mats[0] if mats else "Constant")
+    # Calculer l'index pour le selectbox, en gérant le cas où la sélection n'est plus valide
+    if selected_h in mats:
+        idx_H = mats.index(selected_h)
+    else:
+        idx_H = 0 # Se rabattre sur le premier élément ('Constant' normalement)
+        # Optionnel : Corriger l'état si invalide et notifier (nécessite que log_message soit défini)
+        # st.session_state.selected_H_material = mats[idx_H]
+        # log_message(f"Matériau H sélectionné '{selected_h}' invalide, réinitialisé à '{mats[idx_H]}'.")
+
+    st.selectbox(
+        "Matériau H", mats, index=idx_H, key="selected_H_material",
+        on_change=on_material_change, # Assurer que le callback est défini et fonctionnel
+        help="Choisir le matériau à haute réflectivité (H) ou 'Constant' pour définir n et k manuellement."
+    )
+    # Vérifier à nouveau après l'interaction potentielle avec le selectbox
+    h_is_const = st.session_state.get('selected_H_material') == "Constant"
+    colH1, colH2 = st.columns(2)
+    with colH1:
+        st.number_input("n' H",
+                        value=st.session_state.get('nH_r', 2.35), # Utiliser get avec défaut numérique float
+                        min_value=0.0, step=0.01, format="%.4f", key="nH_r",
+                        disabled=not h_is_const, help="Partie réelle si Matériau H = Constant")
+    with colH2:
+        st.number_input("k H",
+                        value=st.session_state.get('nH_i', 0.0), # Utiliser get avec défaut numérique float
+                        min_value=0.0, step=1e-4, format="%.4f", key="nH_i",
+                        disabled=not h_is_const, help="Partie imaginaire (>=0) si Matériau H = Constant")
+
+    # --- Matériau L ---
+    selected_l = st.session_state.get('selected_L_material', mats[0] if mats else "Constant")
+    if selected_l in mats:
+        idx_L = mats.index(selected_l)
+    else:
+        idx_L = 0
+        # Optionnel : Corriger l'état et notifier
+        # st.session_state.selected_L_material = mats[idx_L]
+        # log_message(f"Matériau L sélectionné '{selected_l}' invalide, réinitialisé à '{mats[idx_L]}'.")
+    st.selectbox(
+        "Matériau L", mats, index=idx_L, key="selected_L_material",
+        on_change=on_material_change,
+        help="Choisir le matériau à basse réflectivité (L) ou 'Constant'."
+    )
+    l_is_const = st.session_state.get('selected_L_material') == "Constant"
+    colL1, colL2 = st.columns(2)
+    with colL1:
+        st.number_input("n' L",
+                        value=st.session_state.get('nL_r', 1.46),
+                        min_value=0.0, step=0.01, format="%.4f", key="nL_r",
+                        disabled=not l_is_const, help="Partie réelle si Matériau L = Constant")
+    with colL2:
+        st.number_input("k L",
+                        value=st.session_state.get('nL_i', 0.0),
+                        min_value=0.0, step=1e-4, format="%.4f", key="nL_i",
+                        disabled=not l_is_const, help="Partie imaginaire (>=0) si Matériau L = Constant")
+
+    # --- Substrat ---
+    selected_s = st.session_state.get('selected_Sub_material', subs[0] if subs else "Constant")
+    if selected_s in subs:
+        idx_S = subs.index(selected_s)
+    else:
+        idx_S = 0
+        # Optionnel : Corriger l'état et notifier
+        # st.session_state.selected_Sub_material = subs[idx_S]
+        # log_message(f"Substrat sélectionné '{selected_s}' invalide, réinitialisé à '{subs[idx_S]}'.")
+    st.selectbox(
+        "Substrat", subs, index=idx_S, key="selected_Sub_material",
+        on_change=on_material_change,
+        help="Choisir le matériau du substrat ou 'Constant'."
+    )
+    sub_is_const = st.session_state.get('selected_Sub_material') == "Constant"
+    colS1, colS2 = st.columns([3,1]) # Plus d'espace pour l'entrée n'
+    with colS1:
+        st.number_input("n' Substrat",
+                        value=st.session_state.get('nSub', 1.52), # Défaut float
+                        min_value=0.0, step=0.01, format="%.4f", key="nSub",
+                        disabled=not sub_is_const, help="Partie réelle si Substrat = Constant (k=0 assumé)")
+    with colS2:
+        # Rappel de la convention n = n' + ik
+        st.markdown("<p style='font-size:0.75rem; margin-top: 25px; color: gray;'>(n = n'+ik)</p>", unsafe_allow_html=True)
+        
         # Affichage Graphe Indices
         label_btn_idx = "Masquer Indices n'(λ)" if st.session_state.get('show_indices_plot') else "👁️ Voir Indices n'(λ)"
         if st.button(label_btn_idx, key="toggle_indices_btn_sb"):
