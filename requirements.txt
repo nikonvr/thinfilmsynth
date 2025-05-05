@@ -2,9 +2,9 @@
 
 streamlit
 jax
-jaxlib  # Indispensable pour JAX, souvent installé avec jax mais mieux vaut l'expliciter
+jaxlib
 numpy
 pandas
 scipy
 matplotlib
-openpyxl  # Requis par Pandas pour lire les fichiers .xlsx
+openpyxl
