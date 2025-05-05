@@ -2046,7 +2046,12 @@ for col, header in zip(target_cols_header, headers):
     col.markdown(f"**{header}**")
 
 # Récupérer et afficher les lignes de cibles
-targets_state = st.session_state.target_entries # C'est une liste de dicts
+# In main UI area, before the target loop
+targets_state = st.session_state.get('target_entries', []) # Use .get()
+if not targets_state: # If .get returned [], maybe log an issue or show a message
+     st.warning("L'état des cibles n'a pas pu être initialisé correctement.")
+     # Optionally re-initialize or stop? For now, just warn.
+# ... the loop using targets_state 
 for i in range(len(targets_state)):
     # Créer une clé unique pour chaque ligne/widget
     row_key_prefix = f"target_{i}"
