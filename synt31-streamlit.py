@@ -31,6 +31,8 @@ import functools
 from typing import Union, Tuple, Dict, List, Any, Callable
 import io # For file handling in Streamlit
 
+st.set_page_config(layout="wide", page_title="Thin Film Optimizer (Streamlit)")
+
 # --- Constants (from original code) ---
 MIN_THICKNESS_PHYS_NM = 0.01
 BASE_NEEDLE_THICKNESS_NM = 0.1
@@ -803,7 +805,7 @@ if not st.session_state.available_materials:
 
 # --- Streamlit UI Definition ---
 
-st.set_page_config(layout="wide", page_title="Thin Film Optimizer (Streamlit)")
+
 st.title("Thin Film Stack Optimizer (Streamlit / JAX)")
 
 # --- Sidebar for Controls ---
