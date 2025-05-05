@@ -998,69 +998,266 @@ def _run_needle_iterations_st(ep_start: np.ndarray, num_needles: int,
     logs.append(f"{log_prefix} Total Iter/Eval: {total_nit_needles}/{total_nfev_needles} sur {successful_reopts_count} ré-opts.")
     return best_ep_overall, best_mse_overall, logs, total_nit_needles, total_nfev_needles, successful_reopts_count
 
+# [PREVIOUS CODE HERE - Imports, Config, CSS, Constants, Core Functions 1-26, etc.]
+# ...
 
-# Fonction 26: setup_axis_grids_st (Helper Plotting)
+# Fonction 26: setup_axis_grids_st (Helper Plotting - rappel)
 def setup_axis_grids_st(ax):
     """Configure les grilles standard pour un axe Matplotlib."""
     ax.grid(which='major', color='grey', linestyle='-', linewidth=0.5, alpha=0.7)
     ax.grid(which='minor', color='lightgrey', linestyle=':', linewidth=0.3, alpha=0.5)
     ax.minorticks_on()
 
-# Fonction 27: draw_plots_st (Helper Plotting)
-def draw_plots_st(res_plot, ep_actual, nH_mat, nL_mat, nSub_mat, active_targets_plot, mse,
-                  is_optimized, method_name, res_optim_grid, material_sequence):
-    """Génère la figure Matplotlib principale pour Streamlit."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5)) # Taille ajustée légèrement
-    plot_title = f'Résultats {"Optimisés" if is_optimized else "Nominaux"}'
-    if method_name: plot_title += f" ({method_name})"
+# Fonction 27: draw_plots_st (Génération Figure Principale)
+def draw_plots_st(res_plot: Dict[str, np.ndarray], # Résultats du calcul {l: array, Ts: array}
+                  ep_actual: np.ndarray,           # Vecteur épaisseurs actuel (np.array)
+                  nH_mat: MaterialInputType,       # Définition matériau H
+                  nL_mat: MaterialInputType,       # Définition matériau L
+                  nSub_mat: MaterialInputType,     # Définition matériau Substrat
+                  active_targets_plot: List[Dict], # Liste des cibles actives [{'min':..},..]
+                  mse: Union[float, None],         # MSE calculé (ou None)
+                  is_optimized: bool = False,      # Flag si état optimisé
+                  method_name: str = "",           # Nom de la méthode utilisée (pour titre)
+                  res_optim_grid: Union[Dict, None] = None, # Résultats sur grille opt {l, Ts}
+                  material_sequence: Union[List[str], None] = None # Séquence arbitraire (optionnel)
+                  ) -> plt.Figure:
+    """
+    Génère la figure Matplotlib principale avec 3 sous-graphiques (Spectre, Profil n', Empilement)
+    pour affichage dans Streamlit.
+
+    Args:
+        res_plot: Dictionnaire contenant 'l' et 'Ts' du calcul principal.
+        ep_actual: Vecteur NumPy des épaisseurs actuelles.
+        nH_mat, nL_mat, nSub_mat: Définitions des matériaux.
+        active_targets_plot: Liste des dictionnaires des cibles actives.
+        mse: Valeur MSE calculée ou None.
+        is_optimized: Booléen indiquant si les données proviennent d'une optimisation.
+        method_name: String décrivant la méthode (pour le titre).
+        res_optim_grid: Optionnel, résultats {'l','Ts'} sur grille opt pour afficher les points.
+        material_sequence: Optionnel, liste des noms de matériaux si séquence arbitraire.
+
+    Returns:
+        matplotlib.figure.Figure: La figure générée.
+    """
+    # Créer une nouvelle figure à chaque appel pour éviter problèmes état Matplotlib avec Streamlit
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5)) # Taille ajustée
+
+    # --- Titre Général ---
+    opt_method_str = f" ({method_name})" if method_name else ""
+    plot_title = f'Résultats {"Optimisés" if is_optimized else "Nominaux"}{opt_method_str}'
     fig.suptitle(plot_title, fontsize=14, weight='bold')
 
     num_layers = len(ep_actual) if ep_actual is not None else 0
     ep_cumulative = np.cumsum(ep_actual) if num_layers > 0 else np.array([])
 
-    # --- Graphe 1: Spectre ---
+    # --- 1. Graphe Spectre (axes[0]) ---
     ax_spec = axes[0]
-    # ... (Logique de tracé du spectre, des cibles, et des points d'opt, comme dans la version précédente) ...
-    # Assurer l'utilisation de setup_axis_grids_st
+    ax_spec.set_title("Spectre T(λ)")
+    ax_spec.set_xlabel("Longueur d'onde (nm)")
+    ax_spec.set_ylabel('Transmittance')
+
     if res_plot and 'l' in res_plot and 'Ts' in res_plot and res_plot['l'] is not None and len(res_plot['l']) > 0:
-        # ... (Tracé Ts, Cibles, Points Opt Grid) ...
-        ax_spec.set_xlabel("Longueur d'onde (nm)")
-        ax_spec.set_ylabel('Transmittance')
-        ax_spec.set_title("Spectre")
+        res_l_plot = np.asarray(res_plot['l'])
+        res_ts_plot = np.asarray(res_plot['Ts'])
+
+        # Tracé Transmittance
+        ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
+
+        # Tracé Cibles Actives
+        plotted_target_label = False
+        if active_targets_plot:
+            for target in active_targets_plot:
+                try:
+                    l_min, l_max = float(target['min']), float(target['max'])
+                    t_min, t_max = float(target['target_min']), float(target['target_max'])
+                    x_coords, y_coords = [l_min, l_max], [t_min, t_max]
+                    label = 'Cible' if not plotted_target_label else "_nolegend_"
+                    ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.8, label=label, zorder=5)
+                    ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', zorder=6)
+                    plotted_target_label = True
+                except (KeyError, ValueError, TypeError): continue # Ignorer cible mal formée
+
+            # Tracé Points Grille Optimisation (si fournis)
+            if res_optim_grid and 'l' in res_optim_grid and res_optim_grid['l'].size > 0:
+                 res_l_optim = np.asarray(res_optim_grid['l'])
+                 # Tracer les points cibles correspondants sur la grille d'optimisation
+                 for target in active_targets_plot:
+                    try:
+                        l_min, l_max = float(target['min']), float(target['max'])
+                        t_min, t_max = float(target['target_min']), float(target['target_max'])
+                        indices_optim = np.where((res_l_optim >= l_min) & (res_l_optim <= l_max))[0]
+                        if indices_optim.size > 0:
+                            optim_lambdas = res_l_optim[indices_optim]
+                            if abs(l_max - l_min) < 1e-9: optim_target_t = np.full_like(optim_lambdas, t_min)
+                            else: slope = (t_max - t_min) / (l_max - l_min); optim_target_t = t_min + slope * (optim_lambdas - l_min)
+                            ax_spec.plot(optim_lambdas, np.clip(optim_target_t, 0, 1), marker='.', color='darkred', linestyle='none', markersize=3, alpha=0.7, zorder=6)
+                    except (KeyError, ValueError, TypeError): continue
+
+        # Configuration Axes Spectre
         setup_axis_grids_st(ax_spec)
-        # ... (xlim, ylim, legend, texte MSE) ...
-    else:
+        if len(res_l_plot) > 0: ax_spec.set_xlim(res_l_plot.min(), res_l_plot.max())
+        ax_spec.set_ylim(-0.05, 1.05)
+        if ax_spec.has_data(): ax_spec.legend(fontsize='small')
+
+        # Annotation MSE
+        if mse is not None and not np.isnan(mse) and mse != -1 : mse_text = f"MSE = {mse:.3e}"
+        elif mse == -1: mse_text = "MSE: N/A (Pas ré-opt)"
+        elif mse is None and active_targets_plot: mse_text = "MSE: Erreur Calc."
+        elif mse is None: mse_text = "MSE: N/A (pas cible)"
+        else: mse_text = "MSE: N/A (pas pts)" # Cas mse = NaN
+        ax_spec.text(0.98, 0.02, mse_text, transform=ax_spec.transAxes, ha='right', va='bottom', fontsize='small', bbox=dict(boxstyle='round,pad=0.2', fc='wheat', alpha=0.7))
+
+    else: # Pas de données spectrales
         ax_spec.text(0.5, 0.5, "Pas de données spectrales", ha='center', va='center', transform=ax_spec.transAxes)
-        ax_spec.set_title("Spectre")
+        setup_axis_grids_st(ax_spec); ax_spec.set_ylim(-0.05, 1.05)
 
-    # --- Graphe 2: Profil d'indice ---
+    # --- 2. Graphe Profil d'Indice (axes[1]) ---
     ax_idx = axes[1]
-    l0_repr = 500.0; try: l0_repr = float(st.session_state.l0) except Exception: pass
-    # ... (Logique pour obtenir nH/nL/nSub @ l0, déterminer n_real_layers_repr) ...
-    # ... (Créer x_coords_plot, y_coords_plot pour le step plot) ...
-    # ... (Tracer avec ax_idx.plot(..., drawstyle='steps-post', ...)) ...
+    l0_repr = 500.0 # Défaut
+    try:
+        if 'l0' in st.session_state: l0_repr = float(st.session_state.l0)
+        if l0_repr <= 0: raise ValueError("l0 doit être positif")
+    except Exception as e_l0:
+        log_message(f"AVERTISSEMENT: Impossible lire/convertir l0 ('{st.session_state.get('l0', 'N/A')}') pour tracé profil. Utilisation 500nm. Erreur: {e_l0}")
+        l0_repr = 500.0
     ax_idx.set_title(f"Profil Indice n' (λ={l0_repr:.0f}nm)")
-    ax_idx.set_xlabel('Profondeur (nm)'); ax_idx.set_ylabel("n'")
-    setup_axis_grids_st(ax_idx)
-    # ... (xlim, ylim, legend, texte SUBSTRATE/AIR) ...
-    # Placeholder si la logique n'est pas copiée ici pour la concision
-    if num_layers > 0: ax_idx.text(0.5, 0.5, "[Profil d'indice ici]", ha='center', va='center', transform=ax_idx.transAxes)
+    ax_idx.set_xlabel('Profondeur (depuis substrat) (nm)')
+    ax_idx.set_ylabel("Partie Réelle Indice (n')")
 
-    # --- Graphe 3: Diagramme Empilement ---
+    try:
+        # Obtenir n+ik @ l0_repr
+        nH_c_repr = _get_nk_at_lambda(nH_mat, l0_repr)
+        nL_c_repr = _get_nk_at_lambda(nL_mat, l0_repr)
+        nSub_c_repr = _get_nk_at_lambda(nSub_mat, l0_repr)
+        nH_r_repr, nL_r_repr, nSub_r_repr = nH_c_repr.real, nL_c_repr.real, nSub_c_repr.real
+
+        # Déterminer n' pour chaque couche
+        n_real_layers_repr = []
+        if material_sequence and len(material_sequence) == num_layers:
+            # Cas séquence arbitraire (nécessite accès aux définitions via nom)
+            log_message("Tracé profil indice pour séquence arbitraire (expérimental).")
+            for mat_name in material_sequence:
+                try: n_real_layers_repr.append(_get_nk_at_lambda(mat_name, l0_repr).real)
+                except Exception as e_nk_seq:
+                     n_real_layers_repr.append(np.nan); log_message(f"Erreur indice pour '{mat_name}' @{l0_repr}nm: {e_nk_seq}")
+        else: # Cas HLHL...
+            n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
+
+        # Créer coordonnées pour step plot
+        total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
+        margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
+        x_coords_plot = [-margin, 0] # Substrat
+        y_coords_plot = [nSub_r_repr, nSub_r_repr]
+        current_pos = 0.0
+        for i in range(num_layers):
+            layer_n_real = n_real_layers_repr[i] if i < len(n_real_layers_repr) else np.nan
+            layer_thickness = ep_actual[i]
+            x_coords_plot.extend([current_pos, current_pos + layer_thickness])
+            y_coords_plot.extend([layer_n_real, layer_n_real])
+            current_pos += layer_thickness
+        x_coords_plot.extend([total_thickness, total_thickness + margin]) # Air
+        y_coords_plot.extend([1.0, 1.0])
+
+        # Filtrer les NaN potentiels pour le tracé et limites
+        valid_indices_plot = ~np.isnan(y_coords_plot)
+        x_coords_plot_valid = np.array(x_coords_plot)[valid_indices_plot]
+        y_coords_plot_valid = np.array(y_coords_plot)[valid_indices_plot]
+
+        if len(x_coords_plot_valid) > 1:
+            ax_idx.plot(x_coords_plot_valid, y_coords_plot_valid, drawstyle='steps-post', label=f"n'(λ={l0_repr:.0f}nm)", color='purple', linewidth=1.5)
+
+            # Limites et Annotations
+            min_n_list = [1.0, nSub_r_repr] + [n for n in n_real_layers_repr if not np.isnan(n)]
+            max_n_list = [1.0, nSub_r_repr] + [n for n in n_real_layers_repr if not np.isnan(n)]
+            min_n = min(min_n_list) if min_n_list else 0.9
+            max_n = max(max_n_list) if max_n_list else 2.5
+            ax_idx.set_ylim(bottom=min_n - 0.1, top=max_n + 0.1)
+            ax_idx.set_xlim(x_coords_plot_valid.min(), x_coords_plot_valid.max())
+
+            offset = (max_n - min_n) * 0.05 + 0.02
+            common_text_opts = {'ha':'center', 'va':'bottom', 'fontsize':'small', 'bbox':dict(facecolor='white', alpha=0.6, pad=0.1, edgecolor='none')}
+            n_sub_label = f"{nSub_c_repr.real:.3f}" + (f"{nSub_c_repr.imag:+.3f}j" if abs(nSub_c_repr.imag) > 1e-6 else "")
+            ax_idx.text(-margin / 2, nSub_r_repr + offset, f"SUB\nn={n_sub_label}", **common_text_opts)
+            air_x_pos = total_thickness + margin / 2
+            ax_idx.text(air_x_pos, 1.0 + offset, "AIR\nn=1.0", **common_text_opts)
+            if ax_idx.has_data(): ax_idx.legend(fontsize='x-small', loc='lower right')
+        else:
+             ax_idx.text(0.5, 0.5, "Données d'indice\nindisponibles", ha='center', va='center', transform=ax_idx.transAxes)
+
+    except Exception as e_idx_plot:
+        ax_idx.text(0.5, 0.5, f"Erreur tracé profil:\n{e_idx_plot}", ha='center', va='center', transform=ax_idx.transAxes)
+        log_message(f"Erreur tracé profil indice: {e_idx_plot}")
+    finally:
+        setup_axis_grids_st(ax_idx) # Appliquer grille dans tous les cas
+
+
+    # --- 3. Graphe Empilement (axes[2]) ---
     ax_stack = axes[2]
     ax_stack.set_title(f"Empilement ({num_layers} couches)")
     if num_layers > 0:
-        # ... (Logique pour obtenir indices complexes @ l0, déterminer couleurs) ...
-        # ... (Tracer avec ax_stack.barh(...)) ...
-        # ... (Définir yticks_labels, set_yticks, set_yticklabels, invert_yaxis) ...
-        # ... (Ajouter texte épaisseurs sur les barres) ...
-        ax_stack.set_xlabel('Épaisseur (nm)')
-    else:
-         ax_stack.text(0.5, 0.5, "Pas de couches", ha='center', va='center', transform=ax_stack.transAxes)
-         ax_stack.set_xticks([]); ax_stack.set_yticks([])
+        try:
+            # Obtenir indices complexes @ l0 pour labels
+            indices_complex_repr = []
+            mat_names_for_label = []
+            if material_sequence and len(material_sequence) == num_layers:
+                mat_names_for_label = material_sequence
+                for mat_name in material_sequence:
+                    try: indices_complex_repr.append(_get_nk_at_lambda(mat_name, l0_repr))
+                    except Exception: indices_complex_repr.append(complex(np.nan, np.nan))
+            else: # HLHL
+                nH_c_repr = _get_nk_at_lambda(nH_mat, l0_repr)
+                nL_c_repr = _get_nk_at_lambda(nL_mat, l0_repr)
+                indices_complex_repr = [nH_c_repr if i % 2 == 0 else nL_c_repr for i in range(num_layers)]
+                mat_names_for_label = [str(nH_mat)[:6] if i % 2 == 0 else str(nL_mat)[:6] for i in range(num_layers)] # Noms courts
 
-    plt.tight_layout(pad=1.0, h_pad=1.5, w_pad=1.5, rect=[0, 0.03, 1, 0.95])
-    return fig # Retourner la figure
+            # Couleurs barres
+            colors = ['lightblue' if i % 2 == 0 else 'lightcoral' for i in range(num_layers)] # Simple HL
+
+            bar_pos = np.arange(num_layers)
+            bars = ax_stack.barh(bar_pos, ep_actual, align='center', color=colors, edgecolor='grey', height=0.8)
+
+            # Labels Y
+            yticks_labels = []
+            for i in range(num_layers):
+                layer_type = mat_names_for_label[i]
+                n_comp = indices_complex_repr[i]
+                n_str = f"{n_comp.real:.3f}" if not np.isnan(n_comp.real) else "N/A"
+                if not np.isnan(n_comp.imag) and abs(n_comp.imag) > 1e-6: n_str += f"{n_comp.imag:+.3f}j"
+                yticks_labels.append(f"L{i + 1} ({layer_type}) n≈{n_str}")
+
+            ax_stack.set_yticks(bar_pos)
+            ax_stack.set_yticklabels(yticks_labels, fontsize='x-small') # Police plus petite
+            ax_stack.invert_yaxis()
+
+            # Texte épaisseurs sur barres
+            max_ep = ep_actual.max() if ep_actual.size > 0 else 1.0
+            fontsize_bar = max(6, 9 - num_layers // 15) # Ajuster taille texte
+            for i, e_val in enumerate(ep_actual):
+                ha_pos = 'left' if e_val < max_ep * 0.25 else 'right' # Ajuster seuil
+                x_text_pos = e_val * 1.03 if ha_pos == 'left' else e_val * 0.97
+                text_color = 'black' if ha_pos == 'left' else 'white'
+                ax_stack.text(x_text_pos, i, f"{e_val:.2f}", va='center', ha=ha_pos, color=text_color, fontsize=fontsize_bar, weight='bold')
+
+            ax_stack.set_xlabel('Épaisseur (nm)')
+            ax_stack.set_ylim(bottom=num_layers - 0.5, top=-0.5)
+
+        except Exception as e_stack_plot:
+             ax_stack.text(0.5, 0.5, f"Erreur tracé empilement:\n{e_stack_plot}", ha='center', va='center', transform=ax_stack.transAxes)
+             log_message(f"Erreur tracé empilement: {e_stack_plot}")
+    else: # Pas de couches
+        ax_stack.text(0.5, 0.5, "Pas de couches", ha='center', va='center', fontsize=10, color='grey')
+        ax_stack.set_xticks([]); ax_stack.set_yticks([])
+
+    # --- Ajustements Finaux Figure ---
+    try:
+        plt.tight_layout(pad=1.0, h_pad=1.5, w_pad=1.5, rect=[0, 0.03, 1, 0.95])
+    except Exception:
+        log_message("Avertissement: échec ajustement layout Matplotlib.")
+        plt.tight_layout() # Essayer sans rect
+
+    return fig # Retourner la figure générée
+
+
 
 # ============================================================
 # 3. STREAMLIT UI HELPER FUNCTIONS & STATE MANAGEMENT (Suite)
