@@ -1876,32 +1876,32 @@ with st.sidebar:
                                key="save_opt_btn_sb", disabled=bool(save_error) or (save_data_optimized_dict is None))
 
     # --- Section Matériaux ---
-with st.expander("🔬 Matériaux et Substrat", expanded=True):
-    # Récupérer les listes de matériaux/substrats de manière sûre depuis l'état de session
-    # Fournir une liste par défaut minimale si l'état n'est pas encore initialisé
-    mats = st.session_state.get('available_materials', ["Constant"])
-    subs = st.session_state.get('available_substrates', ["Constant", "Fused Silica", "BK7", "D263"])
+    with st.expander("🔬 Matériaux et Substrat", expanded=True):
+        # Récupérer les listes de matériaux/substrats de manière sûre depuis l'état de session
+        # Fournir une liste par défaut minimale si l'état n'est pas encore initialisé
+        mats = st.session_state.get('available_materials', ["Constant"])
+        subs = st.session_state.get('available_substrates', ["Constant", "Fused Silica", "BK7", "D263"])
 
     # --- Matériau H ---
     # Récupérer la sélection actuelle de manière sûre
-    selected_h = st.session_state.get('selected_H_material', mats[0] if mats else "Constant")
-    # Calculer l'index pour le selectbox, en gérant le cas où la sélection n'est plus valide
-    if selected_h in mats:
-        idx_H = mats.index(selected_h)
-    else:
-        idx_H = 0 # Se rabattre sur le premier élément ('Constant' normalement)
-        # Optionnel : Corriger l'état si invalide et notifier (nécessite que log_message soit défini)
-        # st.session_state.selected_H_material = mats[idx_H]
-        # log_message(f"Matériau H sélectionné '{selected_h}' invalide, réinitialisé à '{mats[idx_H]}'.")
+        selected_h = st.session_state.get('selected_H_material', mats[0] if mats else "Constant")
+        # Calculer l'index pour le selectbox, en gérant le cas où la sélection n'est plus valide
+        if selected_h in mats:
+            idx_H = mats.index(selected_h)
+        else:
+            idx_H = 0 # Se rabattre sur le premier élément ('Constant' normalement)
+            # Optionnel : Corriger l'état si invalide et notifier (nécessite que log_message soit défini)
+            # st.session_state.selected_H_material = mats[idx_H]
+            # log_message(f"Matériau H sélectionné '{selected_h}' invalide, réinitialisé à '{mats[idx_H]}'.")
 
-    st.selectbox(
-        "Matériau H", mats, index=idx_H, key="selected_H_material",
-        on_change=on_material_change, # Assurer que le callback est défini et fonctionnel
-        help="Choisir le matériau à haute réflectivité (H) ou 'Constant' pour définir n et k manuellement."
-    )
-    # Vérifier à nouveau après l'interaction potentielle avec le selectbox
-    h_is_const = st.session_state.get('selected_H_material') == "Constant"
-    colH1, colH2 = st.columns(2)
+        st.selectbox(
+            "Matériau H", mats, index=idx_H, key="selected_H_material",
+            on_change=on_material_change, # Assurer que le callback est défini et fonctionnel
+            help="Choisir le matériau à haute réflectivité (H) ou 'Constant' pour définir n et k manuellement."
+        )
+        # Vérifier à nouveau après l'interaction potentielle avec le selectbox
+        h_is_const = st.session_state.get('selected_H_material') == "Constant"
+        colH1, colH2 = st.columns(2)
     with colH1:
         st.number_input("n' H",
                         value=st.session_state.get('nH_r', 2.35), # Utiliser get avec défaut numérique float
