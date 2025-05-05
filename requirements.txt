@@ -1,5 +1,17 @@
-streamlit
-numpy
-matplotlib
-scipy
-numba
+# requirements.txt for Thin Film Optimizer Streamlit App
+
+streamlit>=1.30.0,<2.0.0
+numpy>=1.24.0,<2.0.0
+scipy>=1.11.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+matplotlib>=3.7.0,<4.0.0
+openpyxl>=3.1.0,<4.0.0
+# JAX and JAXLIB versions need to be compatible.
+# Check the JAX GitHub page for recommended versions for your OS/CUDA setup.
+# https://github.com/google/jax#installation
+jax>=0.4.20,<0.5.0
+# jaxlib version often needs to match the jax version exactly
+# Example: jaxlib==0.4.27 (CPU version)
+# Example for CUDA 12: jaxlib==0.4.27+cuda12.cudnn89 / pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# --> Specify jaxlib version explicitly based on your system after installing jax <--
+# --> Or install jax using the specific instructions for your CUDA version, which installs the correct jaxlib <--
