@@ -2147,7 +2147,196 @@ if 'app_initialized' not in st.session_state:
 # ============================================================
 # 7. INTERFACE UTILISATEUR STREAMLIT (Sidebar - Déjà définie)
 # ============================================================
-# Le code pour la sidebar (with st.sidebar: ...) est supposé être présent ici.
+# ============================================================
+# 7. INTERFACE UTILISATEUR STREAMLIT (Sidebar)
+# ============================================================
+with st.sidebar:
+    st.header("⚙️ Configuration")
+
+    # --- Section Fichiers & Matériaux ---
+    with st.expander("📁 Fichiers & Matériaux", expanded=True):
+        # Bouton pour recharger les matériaux depuis Excel
+        if st.button("🔄 Recharger Matériaux (Excel)", key="reload_mat_btn", help=f"Relit les matériaux depuis '{EXCEL_FILE_PATH}'"):
+            # @st.cache_data.clear() # Optionnel: vider tout le cache de données
+            # Vider spécifiquement le cache de la fonction de chargement
+            load_material_data_from_xlsx_sheet.cache_clear()
+            update_available_materials() # Met à jour les listes dans session_state
+            st.toast(f"Listes de matériaux rechargées depuis {EXCEL_FILE_PATH} !", icon="✅")
+            # Pas besoin de st.rerun() ici car la mise à jour de session_state le déclenchera implicitement
+
+        # Widget pour charger un fichier de design
+        uploaded_file = st.file_uploader("Charger Design (.json)", type="json", key="load_design_uploader")
+        if uploaded_file is not None:
+            # Traiter le fichier chargé (appelle la logique définie précédemment)
+            handle_load_design_st(uploaded_file)
+            # Nettoyer l'uploader après traitement pour éviter re-traitement au prochain rerun
+            st.session_state.load_design_uploader = None # Ne fonctionne pas directement, le widget se réinitialise
+            # Un st.rerun() est souvent nécessaire après traitement pour rafraîchir l'UI
+            st.rerun()
+
+
+        # Préparation des données pour les boutons de sauvegarde
+        save_data_nominal_dict = {}
+        save_data_optimized_dict = None
+        save_error = None
+        try:
+            save_data_nominal_dict = _collect_design_data_st(include_optimized=False)
+            if st.session_state.get('optimization_ran') and st.session_state.get('current_optimized_ep') is not None:
+                save_data_optimized_dict = _collect_design_data_st(include_optimized=True)
+        except Exception as e_collect:
+            save_error = f"Erreur collecte données pour sauvegarde: {e_collect}"
+            log_message(save_error)
+
+        # Afficher l'erreur de collecte si elle existe
+        if save_error:
+            st.error(save_error)
+
+        # Convertir en JSON string pour le download button (seulement si pas d'erreur)
+        save_json_nominal = ""
+        save_json_optimized = ""
+        if not save_error:
+            try:
+                save_json_nominal = json.dumps(save_data_nominal_dict, indent=4)
+                if save_data_optimized_dict:
+                    save_json_optimized = json.dumps(save_data_optimized_dict, indent=4)
+            except Exception as e_json:
+                 save_error = f"Erreur conversion JSON pour sauvegarde: {e_json}"
+                 log_message(save_error)
+                 st.error(save_error) # Afficher aussi l'erreur JSON
+
+        # Boutons de sauvegarde (désactivés si erreur de collecte/JSON)
+        col_save1, col_save2 = st.columns(2)
+        with col_save1:
+            st.download_button(
+                label="💾 Sauver Nominal",
+                data=save_json_nominal if not save_error else "",
+                file_name=f"design_nominal_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json",
+                key="save_nom_btn",
+                disabled=bool(save_error)
+            )
+        with col_save2:
+            st.download_button(
+                label="💾 Sauver Optimisé",
+                data=save_json_optimized if not save_error and save_data_optimized_dict else "",
+                file_name=f"design_optimise_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json",
+                key="save_opt_btn",
+                disabled=bool(save_error) or (save_data_optimized_dict is None),
+                help="Sauvegarde l'état optimisé actuel (épaisseurs incluses)."
+            )
+
+    # --- Section Matériaux ---
+    with st.expander("🔬 Matériaux et Substrat", expanded=True):
+        # Utiliser les listes stockées dans session_state (mises à jour par update_available_materials)
+        mats = st.session_state.get('available_materials', ["Constant"])
+        subs = st.session_state.get('available_substrates', ["Constant", "Fused Silica", "BK7", "D263"])
+
+        # Matériau H
+        # Trouver l'index actuel pour le selectbox, ou 0 si invalide
+        try: idx_H = mats.index(st.session_state.selected_H_material)
+        except ValueError: idx_H = 0
+        st.selectbox("Matériau H", mats, index=idx_H, key="selected_H_material", on_change=on_material_change)
+        h_is_const = st.session_state.selected_H_material == "Constant"
+        colH1, colH2 = st.columns(2)
+        # Utiliser number_input pour les constantes n/k pour une meilleure validation
+        with colH1:
+            st.number_input("n' H", value=float(st.session_state.nH_r), min_value=0.0, step=0.01, format="%.4f", key="nH_r", disabled=not h_is_const, help="Partie réelle si Matériau H = Constant")
+        with colH2:
+            st.number_input("k H", value=float(st.session_state.nH_i), min_value=0.0, step=1e-4, format="%.4f", key="nH_i", disabled=not h_is_const, help="Partie imaginaire (>=0) si Matériau H = Constant")
+
+        # Matériau L
+        try: idx_L = mats.index(st.session_state.selected_L_material)
+        except ValueError: idx_L = 0
+        st.selectbox("Matériau L", mats, index=idx_L, key="selected_L_material", on_change=on_material_change)
+        l_is_const = st.session_state.selected_L_material == "Constant"
+        colL1, colL2 = st.columns(2)
+        with colL1:
+            st.number_input("n' L", value=float(st.session_state.nL_r), min_value=0.0, step=0.01, format="%.4f", key="nL_r", disabled=not l_is_const, help="Partie réelle si Matériau L = Constant")
+        with colL2:
+            st.number_input("k L", value=float(st.session_state.nL_i), min_value=0.0, step=1e-4, format="%.4f", key="nL_i", disabled=not l_is_const, help="Partie imaginaire (>=0) si Matériau L = Constant")
+
+        # Substrat
+        try: idx_S = subs.index(st.session_state.selected_Sub_material)
+        except ValueError: idx_S = 0
+        st.selectbox("Substrat", subs, index=idx_S, key="selected_Sub_material", on_change=on_material_change)
+        sub_is_const = st.session_state.selected_Sub_material == "Constant"
+        colS1, colS2 = st.columns([3,1]) # Donner plus de place à l'entrée n'
+        with colS1:
+             st.number_input("n' Substrat", value=float(st.session_state.nSub), min_value=0.0, step=0.01, format="%.4f", key="nSub", disabled=not sub_is_const, help="Partie réelle si Substrat = Constant (k=0 assumé)")
+        with colS2:
+             # Note sur la convention n+ik
+             st.markdown("<p style='font-size:0.75rem; margin-top: 25px; color: gray;'>(n = n'+ik)</p>", unsafe_allow_html=True)
+
+        # Bouton pour afficher/cacher le graphe des indices
+        label_btn_idx = "Masquer Indices n'(λ)" if st.session_state.get('show_indices_plot') else "👁️ Voir Indices n'(λ)"
+        if st.button(label_btn_idx, key="toggle_indices_btn"):
+             st.session_state.show_indices_plot = not st.session_state.get('show_indices_plot', False)
+             st.session_state.figure_indices = None # Forcer regénération si on ré-affiche
+             st.rerun() # Mettre à jour l'affichage de l'expander
+
+    # --- Affichage optionnel du graphe des indices ---
+    if st.session_state.get('show_indices_plot', False):
+         with st.expander("Indices n'(λ) des Matériaux Sélectionnés", expanded=True):
+            if st.session_state.get('figure_indices') is None:
+                log_message("Génération du graphique des indices...")
+                try:
+                    st.session_state.figure_indices = draw_material_index_plot_st()
+                except Exception as e_idx_plot:
+                    st.error(f"Erreur lors de la génération du graphique des indices: {e_idx_plot}")
+                    log_message(f"Erreur plot indices: {e_idx_plot}\n{traceback.format_exc(limit=2)}")
+                    st.session_state.figure_indices = None
+
+            if st.session_state.figure_indices:
+                st.pyplot(st.session_state.figure_indices, clear_figure=False) # Garder la référence
+            else:
+                st.warning("Impossible d'afficher le graphique des indices.")
+
+
+    # --- Section Définition Empilement ---
+    with st.expander("🧱 Définition Empilement", expanded=True):
+         # Champ texte pour le QWOT nominal
+         st.text_area("QWOT Nominal (ex: 1,1,0.8,1.2,...)", key="emp_str", on_change=on_qwot_change, height=100)
+
+         # Champ pour le nombre initial de couches (synchronisé avec QWOT)
+         col_init1, col_init2 = st.columns([2,3])
+         with col_init1:
+             # Utiliser number_input pour forcer un entier
+             st.number_input("Nb Couches Initial", min_value=0, step=1, key="initial_layer_number", format="%d", on_change=on_initial_layer_change, help="Utilisé par '1. Start Nom.'. Met aussi à jour le QWOT nominal avec des '1'.")
+         with col_init2:
+             # Affichage dynamique du nombre de couches actuel
+             current_ep = st.session_state.get('current_optimized_ep')
+             is_opt = st.session_state.get('optimization_ran', False)
+             num_layers_disp = 0
+             label_type = "Nominal"
+             if is_opt and current_ep is not None:
+                 num_layers_disp = len(current_ep)
+                 label_type = "Optimisé"
+             else:
+                 try:
+                     num_layers_disp = len([item for item in st.session_state.emp_str.split(',') if item.strip()])
+                 except Exception: num_layers_disp = 0
+             label_disp = f"Couches ({label_type}): **{num_layers_disp}**"
+             st.markdown(f"<div style='margin-top: 28px; font-size:0.85rem;'>{label_disp}</div>", unsafe_allow_html=True)
+
+         # Affichage (readonly) du QWOT optimisé
+         st.text_input("QWOT Optimisé (readonly)", key="optimized_qwot_display", disabled=True, help="QWOT calculé à partir de la dernière structure optimisée.")
+
+         # Champ pour Lambda de centrage QWOT
+         st.number_input("λ Centrage QWOT (nm)", min_value=0.1, step=1.0, key="l0", format="%.2f", help="Longueur d'onde de référence pour le calcul QWOT -> épaisseur.")
+
+    # --- Section Paramètres Calcul & Optimisation ---
+    with st.expander("🛠️ Paramètres Calcul & Optimisation", expanded=False):
+         colP1, colP2 = st.columns(2)
+         with colP1:
+             # Utiliser number_input pour les entiers
+             st.number_input("Max Iter (Opt)", min_value=1, step=10, key="maxiter", format="%d")
+         with colP2:
+             st.number_input("Max Eval (Opt)", min_value=1, step=10, key="maxfun", format="%d")
+         st.number_input("λ Step (nm) (Optim/Plot)", min_value=0.01, step=0.1, key="l_step", format="%.2f", help="Pas pour la grille d'optimisation (géométrique) et résolution de base pour les tracés.")
+         st.number_input("Seuil Élimination Auto (nm)", min_value=0.0, step=0.1, key="auto_thin_threshold", format="%.3f", help="Épaisseur max pour élimination auto en mode 'Auto'.")
+
+# --- FIN DU BLOC SIDEBAR ---
 
 # ============================================================
 # 8. INTERFACE UTILISATEUR STREAMLIT (Zone Principale - Complétée)
