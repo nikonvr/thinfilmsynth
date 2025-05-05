@@ -1143,7 +1143,7 @@ with st.sidebar:
 
     # File Operations (Placeholders updated)
     with st.expander("📂 File Operations", expanded=False):
-        uploaded_file = st.file_uploader("Load Design (.json)", type="json", key="load_design_uploader")
+        #uploaded_file = st.file_uploader("Load Design (.json)", type="json", key="load_design_uploader")
         # Save buttons remain placeholders until generation logic is added
         save_nominal_placeholder = st.empty()
         save_optimized_placeholder = st.empty()
