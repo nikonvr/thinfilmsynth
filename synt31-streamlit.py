@@ -107,6 +107,27 @@ def load_material_data_from_xlsx_sheet(file_path: str, sheet_name: str) -> Tuple
         # traceback.print_exc() # Pour débogage serveur si besoin
         return None, None, None, logs
 
+def get_available_materials_from_excel(excel_path: str) -> Tuple[List[str], List[str]]:
+    """Lit les noms de feuilles (matériaux) depuis le fichier Excel."""
+    logs = []
+    try:
+        xl = pd.ExcelFile(excel_path)
+        # Exclure les noms de feuilles par défaut comme "Sheet1", "Sheet2"...
+        sheet_names = [name for name in xl.sheet_names if not name.startswith("Sheet")]
+        logs.append(f"Matériaux trouvés dans {excel_path}: {sheet_names}")
+        return sheet_names, logs
+    except FileNotFoundError:
+        # Gérer l'erreur de fichier non trouvé plus spécifiquement
+        st.error(f"Fichier Excel '{excel_path}' introuvable pour lister les matériaux.")
+        logs.append(f"Erreur critique FNF: Fichier Excel {excel_path} non trouvé pour lister matériaux.")
+        # Renvoyer une liste vide en cas d'erreur critique
+        return [], logs
+    except Exception as e:
+        st.error(f"Erreur lors de la lecture des noms de feuilles depuis '{excel_path}': {e}")
+        logs.append(f"Erreur lecture noms feuilles depuis {excel_path}: {type(e).__name__} - {e}")
+        return [], logs
+
+
 # Fonctions d'indice pour matériaux prédéfinis
 @jax.jit
 def get_n_fused_silica(l_nm: jnp.ndarray) -> jnp.ndarray:
@@ -2506,12 +2527,20 @@ with st.sidebar:
             if init_layers_num > 0:
                 new_qwot = ",".join(['1'] * init_layers_num)
                 if new_qwot != st.session_state.current_qwot:
-                     st.session_state.current_qwot = new_qwot
-                     clear_optimized_state() # Reset si QWOT généré change
-                     st.rerun()
+                     st.session_state.current_qwot = new_qwot # Met à jour QWOT
+                     clear_optimized_state() # Reset état optimisé
+                     # >>> AJOUTER CES LIGNES <<<
+                     st.session_state.needs_rerun_calc = True # Déclencher calcul
+                     st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (Généré 1s)"}
+                     # >>> FIN AJOUT <<<
+                     st.rerun() # Rerun pour prendre en compte QWOT et lancer calcul
             elif st.session_state.current_qwot != "":
                  st.session_state.current_qwot = ""
                  clear_optimized_state()
+                 # >>> AJOUTER CES LIGNES (optionnel, lancer calcul pour substrat nu?) <<<
+                 st.session_state.needs_rerun_calc = True # Déclencher calcul
+                 st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (QWOT Effacé)"}
+                 # >>> FIN AJOUT <<<
                  st.rerun()
 
     st.divider()
