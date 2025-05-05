@@ -618,6 +618,9 @@ if not st.session_state.available_materials:
         st.session_state.available_materials = ["Constant"]
         st.session_state.combined_substrates = ["Constant", "Fused Silica", "BK7", "D263"]
 st.title("Thin Film Stack Optimizer (Streamlit / JAX)")
+status_placeholder = st.empty()
+status_placeholder.status(st.session_state.status_message, expanded=False, state="complete")
+
 with st.sidebar:
     st.header("Inputs & Controls")
     with st.expander("📂 File Operations", expanded=False):
@@ -2144,6 +2147,5 @@ if st.session_state.get('last_plot_fig') is not None:
     plot_placeholder.pyplot(st.session_state.last_plot_fig)
 else:
     plot_placeholder.info("Run 'Evaluate Nominal' or an optimization to generate plots.")
-status_placeholder.status(st.session_state.status_message, expanded=False, state="complete" if "Error" not in st.session_state.status_message and "Failed" not in st.session_state.status_message else "error")
 
 
