@@ -1930,12 +1930,33 @@ with st.sidebar:
          col_init1, col_init2 = st.columns([2,3])
          with col_init1: st.number_input("Nb Couches Initial", min_value=0, step=1, value=st.session_state.get('initial_layer_number', 1), format="%d", key="initial_layer_number", on_change=on_initial_layer_change, help="Utilisé par '1. Start Nom.'. Met aussi à jour QWOT nominal.")
          with col_init2:
-             current_ep = st.session_state.get('current_optimized_ep'); is_opt = st.session_state.get('optimization_ran', False)
-             num_layers_disp = 0; label_type = "Nominal"
-             if is_opt and current_ep is not None: num_layers_disp = len(current_ep); label_type = "Optimisé"
-             else: try: num_layers_disp = len([item for item in st.session_state.emp_str.split(',') if item.strip()]) except Exception: num_layers_disp = 0
-             label_disp = f"Couches ({label_type}): **{num_layers_disp}**"
-             st.markdown(f"<div style='margin-top: 28px; font-size:0.85rem;'>{label_disp}</div>", unsafe_allow_html=True)
+            # Affichage dynamique du nombre de couches actuel
+            current_ep = st.session_state.get('current_optimized_ep')
+            is_opt = st.session_state.get('optimization_ran', False)
+            num_layers_disp = 0 # Default value
+            label_type = "Nominal" # Default label
+
+            if is_opt and current_ep is not None:
+                num_layers_disp = len(current_ep)
+                label_type = "Optimisé"
+            else:
+                # Calculate from nominal QWOT string, handle errors
+                try:
+                    # Ensure emp_str exists and is a string before splitting
+                    emp_str_val = st.session_state.get('emp_str', '')
+                    if isinstance(emp_str_val, str):
+                         num_layers_disp = len([item for item in emp_str_val.split(',') if item.strip()])
+                    else: # Should not happen if state is managed well, but fallback
+                         num_layers_disp = 0
+                         log_message(f"AVERTISSEMENT: st.session_state.emp_str n'est pas une chaîne ({type(emp_str_val)}). Nb couches mis à 0.")
+                except Exception as e_len:
+                     # Catch potential errors during split/len if emp_str is unusual
+                     num_layers_disp = 0
+                     log_message(f"Erreur calcul nb couches depuis QWOT: {e_len}")
+
+            label_disp = f"Couches ({label_type}): **{num_layers_disp}**"
+            st.markdown(f"<div style='margin-top: 28px; font-size:0.85rem;'>{label_disp}</div>", unsafe_allow_html=True)
+
          st.text_input("QWOT Optimisé (readonly)", key="optimized_qwot_display", disabled=True)
          st.number_input("λ Centrage QWOT (nm)", min_value=0.1, step=1.0, value=st.session_state.get('l0', 500.0), format="%.2f", key="l0")
 
