@@ -878,7 +878,7 @@ with st.sidebar:
             # Substrate k is implicitly 0 for constant type in this setup
 
         # Button to show/hide material index plot
-        if st.button("Plot Selected Material Indices", key="plot_indices_btn"):
+        if st.button("Plot Selected Material Indices", key="plot_indices_btn2"):
              # Logic to generate and display the index plot (needs implementation)
              # display_material_index_plot()
              log_message("Plot Indices button clicked (logic pending)")
