@@ -1059,22 +1059,22 @@ def initialize_session_state():
         'selected_H_material': default_H,
         'selected_L_material': default_L,
         'selected_Sub_material': "Fused Silica" if "Fused Silica" in st.session_state.get('available_substrates',[]) else "Constant",
-        'nH_r': "2.35", 'nH_i': "0.0",
-        'nL_r': "1.46", 'nL_i': "0.0",
-        'nSub': "1.52",
+        'nH_r': 2.35, 'nH_i': 0.0,   # <--- Nombres (float)
+        'nL_r': 1.46, 'nL_i': 0.0,   # <--- Nombres (float)
+        'nSub': 1.52,               # <--- Nombre (float)
         'emp_str': "1", # QWOT initial défaut
-        'initial_layer_number': "1", # Doit être string pour number_input si format %d
-        'l0': "500.0",
-        'l_step': "10.0",
-        'maxiter': "1000", # Doit être string pour number_input si format %d
-        'maxfun': "1000",  # Doit être string pour number_input si format %d
-        'auto_thin_threshold': "1.0",
+        'initial_layer_number': 1, # Doit être string pour number_input si format %d
+        'l0': 500.0,
+        'l_step': 10.0,
+        'maxiter': 1000, # Doit être string pour number_input si format %d
+        'maxfun': 1000,  # Doit être string pour number_input si format %d
+        'auto_thin_threshold': 1.0,
         'target_entries': [ # Liste de dictionnaires pour les cibles par défaut
-            {'min': "400.0", 'max': "500.0", 'target_min': "1.0", 'target_max': "1.0", 'enabled': True},
-            {'min': "500.0", 'max': "600.0", 'target_min': "1.0", 'target_max': "0.2", 'enabled': True},
-            {'min': "600.0", 'max': "700.0", 'target_min': "0.2", 'target_max': "0.2", 'enabled': True},
-            {'min': "700.0", 'max': "800.0", 'target_min': "0.2", 'target_max': "0.8", 'enabled': False}, # Désactivé par défaut
-            {'min': "800.0", 'max': "900.0", 'target_min': "0.8", 'target_max': "0.8", 'enabled': False}, # Désactivé par défaut
+            {'min': 400.0, 'max': 500.0, 'target_min': 1.0, 'target_max': 1.0, 'enabled': True},
+            {'min': 500.0, 'max': 600.0, 'target_min': 1.0, 'target_max': 0.2, 'enabled': True},
+            {'min': 600.0, 'max': 700.0, 'target_min': 0.2, 'target_max': 0.2, 'enabled': True},
+            {'min': 700.0, 'max': 800.0, 'target_min': 0.2, 'target_max': 0.8, 'enabled': False},
+            {'min': 800.0, 'max': 900.0, 'target_min': 0.8, 'target_max': 0.8, 'enabled': False},
         ],
         'log_messages': [f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Application démarrée."],
         'current_optimized_ep': None,
@@ -1107,7 +1107,7 @@ def initialize_session_state():
         num_layers_init_qwot = len([item for item in st.session_state.emp_str.split(',') if item.strip()])
         st.session_state.initial_layer_number = str(max(1, num_layers_init_qwot)) # Assurer au moins 1
     except Exception:
-        st.session_state.initial_layer_number = "1"
+        st.session_state.initial_layer_number = 1
 
 
 # Fonction 31: get_available_materials_from_excel_st
@@ -2241,9 +2241,15 @@ with st.sidebar:
         colH1, colH2 = st.columns(2)
         # Utiliser number_input pour les constantes n/k pour une meilleure validation
         with colH1:
-            st.number_input("n' H", value=float(st.session_state.nH_r), min_value=0.0, step=0.01, format="%.4f", key="nH_r", disabled=not h_is_const, help="Partie réelle si Matériau H = Constant")
+            st.number_input("n' H",
+                    value=st.session_state.get('nH_r', 2.35), # <-- Utiliser .get avec défaut float
+                    min_value=0.0, step=0.01, format="%.4f", key="nH_r",
+                    disabled=not h_is_const, help="Partie réelle si Matériau H = Constant")
         with colH2:
-            st.number_input("k H", value=float(st.session_state.nH_i), min_value=0.0, step=1e-4, format="%.4f", key="nH_i", disabled=not h_is_const, help="Partie imaginaire (>=0) si Matériau H = Constant")
+            st.number_input("k H",
+                    value=st.session_state.get('nH_i', 0.0), # <-- Utiliser .get avec défaut float
+                    min_value=0.0, step=1e-4, format="%.4f", key="nH_i",
+                    disabled=not h_is_const, help="Partie imaginaire (>=0) si Matériau H = Constant")
 
         # Matériau L
         try: idx_L = mats.index(st.session_state.selected_L_material)
@@ -2252,10 +2258,15 @@ with st.sidebar:
         l_is_const = st.session_state.selected_L_material == "Constant"
         colL1, colL2 = st.columns(2)
         with colL1:
-            st.number_input("n' L", value=float(st.session_state.nL_r), min_value=0.0, step=0.01, format="%.4f", key="nL_r", disabled=not l_is_const, help="Partie réelle si Matériau L = Constant")
+            st.number_input("n' L",
+                    value=st.session_state.get('nL_r', 1.45), # <-- Utiliser .get avec défaut float
+                    min_value=0.0, step=0.01, format="%.4f", key="nHL_r",
+                    disabled=not l_is_const, help="Partie réelle si Matériau L = Constant")
         with colL2:
-            st.number_input("k L", value=float(st.session_state.nL_i), min_value=0.0, step=1e-4, format="%.4f", key="nL_i", disabled=not l_is_const, help="Partie imaginaire (>=0) si Matériau L = Constant")
-
+            st.number_input("k L",
+                    value=st.session_state.get('nL_i', 0.0), # <-- Utiliser .get avec défaut float
+                    min_value=0.0, step=1e-4, format="%.4f", key="nL_i",
+                    disabled=not l_is_const, help="Partie imaginaire (>=0) si Matériau L = Constant")
         # Substrat
         try: idx_S = subs.index(st.session_state.selected_Sub_material)
         except ValueError: idx_S = 0
@@ -2302,7 +2313,13 @@ with st.sidebar:
          col_init1, col_init2 = st.columns([2,3])
          with col_init1:
              # Utiliser number_input pour forcer un entier
-             st.number_input("Nb Couches Initial", min_value=0, step=1, key="initial_layer_number", format="%d", on_change=on_initial_layer_change, help="Utilisé par '1. Start Nom.'. Met aussi à jour le QWOT nominal avec des '1'.")
+
+             st.number_input("Nb Couches Initial", min_value=0, step=1,
+                value=st.session_state.get('initial_layer_number', 1), # <-- Utiliser .get avec défaut int
+                format="%d", key="initial_layer_number", on_change=on_initial_layer_change,
+                help="Utilisé par '1. Start Nom.'. Met aussi à jour le QWOT nominal avec des '1'.")
+
+             
          with col_init2:
              # Affichage dynamique du nombre de couches actuel
              current_ep = st.session_state.get('current_optimized_ep')
