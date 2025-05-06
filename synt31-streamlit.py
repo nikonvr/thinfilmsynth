@@ -103,14 +103,54 @@ def get_available_materials_from_excel(excel_path: str) -> Tuple[List[str], List
 
 @jax.jit
 def get_n_fused_silica(l_nm: jnp.ndarray) -> jnp.ndarray:
-    n = jnp.full_like(l_nm, 1.46, dtype=jnp.float64)
-    k_val = jnp.zeros_like(n)
+    """
+    Calcule l'indice de réfraction complexe (n+ik) de la silice fondue (Fused Silica)
+    en fonction de la longueur d'onde en utilisant l'équation de Sellmeier.
+    k est supposé nul.
+    """
+    l_um = l_nm / 1000.0  # Convertir nm en micromètres pour la formule
+    l_um_squared = l_um**2
+
+    # Coefficients de Sellmeier pour Fused Silica (exemple, vérifier la source pour la précision requise)
+    B1 = 0.6961663
+    B2 = 0.4079426
+    B3 = 0.8974794
+    C1 = 0.0684043**2
+    C2 = 0.1162414**2
+    C3 = 9.896161**2
+
+    n_squared = 1.0 + (B1 * l_um_squared) / (l_um_squared - C1) \
+                    + (B2 * l_um_squared) / (l_um_squared - C2) \
+                    + (B3 * l_um_squared) / (l_um_squared - C3)
+
+    n = jnp.sqrt(n_squared)
+    k_val = jnp.zeros_like(n) # k est supposé nul
     return n + 1j * k_val
 
 @jax.jit
 def get_n_bk7(l_nm: jnp.ndarray) -> jnp.ndarray:
-    n = jnp.full_like(l_nm, 1.523, dtype=jnp.float64)
-    k_val = jnp.zeros_like(n)
+    """
+    Calcule l'indice de réfraction complexe (n+ik) du BK7 (N-BK7)
+    en fonction de la longueur d'onde en utilisant l'équation de Sellmeier.
+    k est supposé nul.
+    """
+    l_um = l_nm / 1000.0  # Convertir nm en micromètres pour la formule
+    l_um_squared = l_um**2
+
+    # Coefficients de Sellmeier pour N-BK7 (Source: Schott)
+    B1 = 1.03961212
+    B2 = 0.231792344
+    B3 = 1.01046945
+    C1 = 0.00600069867
+    C2 = 0.0200179144
+    C3 = 103.560653
+
+    n_squared = 1.0 + (B1 * l_um_squared) / (l_um_squared - C1) \
+                    + (B2 * l_um_squared) / (l_um_squared - C2) \
+                    + (B3 * l_um_squared) / (l_um_squared - C3)
+
+    n = jnp.sqrt(n_squared)
+    k_val = jnp.zeros_like(n) # k est supposé nul
     return n + 1j * k_val
 
 @jax.jit
