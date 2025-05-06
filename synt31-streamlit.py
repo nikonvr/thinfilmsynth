@@ -1982,18 +1982,51 @@ def run_remove_thin_wrapper():
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
 
-    if not st.session_state.get('is_optimized_state') or st.session_state.get('optimized_ep') is None:
-        st.error("This action requires an existing optimized structure. Run an optimization first.")
-        return
+    # --- Modification Start ---
+    # Determine the starting structure: optimized if available, otherwise nominal
+    ep_start_removal = None
+    is_starting_from_optimized = False
+    if st.session_state.get('is_optimized_state') and st.session_state.get('optimized_ep') is not None:
+        ep_start_removal = st.session_state.optimized_ep.copy()
+        is_starting_from_optimized = True
+        print("Remove Thin: Starting from existing optimized structure.")
+    else:
+        print("Remove Thin: Starting from nominal structure.")
+        # Need to calculate nominal ep first
+        try:
+            nH_mat_temp, _ = get_material_input('H')
+            nL_mat_temp, _ = get_material_input('L')
+            if nH_mat_temp is None or nL_mat_temp is None:
+                st.error("Cannot calculate nominal structure: Material definition error.")
+                return
+            emp_list_temp = [float(e.strip()) for e in st.session_state.current_qwot.split(',') if e.strip()]
+            if not emp_list_temp:
+                 ep_start_removal = np.array([], dtype=np.float64) # Handle empty QWOT case
+            else:
+                ep_start_removal, logs_ep_init = calculate_initial_ep(
+                    emp_list_temp, st.session_state.l0, nH_mat_temp, nL_mat_temp, EXCEL_FILE_PATH
+                )
+                if ep_start_removal is None:
+                    st.error("Failed to calculate nominal structure from QWOT for removal.")
+                    return
+            st.session_state.current_ep = ep_start_removal.copy() # Update current_ep if starting from nominal
+        except Exception as e_nom:
+            st.error(f"Error calculating nominal structure for removal: {e_nom}")
+            return
+            
+    if ep_start_removal is None:
+         st.error("Could not determine a valid starting structure for removal.")
+         return
 
-    current_ep_optim = st.session_state.optimized_ep.copy()
-    if len(current_ep_optim) <= 2:
+    if len(ep_start_removal) <= 2:
         st.error("Structure too small (<= 2 layers) for removal/merge.")
         return
+    # --- Modification End ---
 
     with st.spinner("Removing thin layer + Re-optimizing..."):
         try:
-            st.session_state.ep_history.append(current_ep_optim)
+            # Store the state *before* removal in history
+            st.session_state.ep_history.append(ep_start_removal.copy()) 
 
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
@@ -2025,8 +2058,9 @@ def run_remove_thin_wrapper():
             validated_inputs['nSub_material'] = nSub_mat
 
             threshold = validated_inputs['auto_thin_threshold']
+            # Use the determined starting structure
             ep_after_removal, structure_changed, removal_logs = _perform_layer_merge_or_removal_only(
-                current_ep_optim, MIN_THICKNESS_PHYS_NM,
+                ep_start_removal, MIN_THICKNESS_PHYS_NM,
                 log_prefix="  [Remove] ",
                 threshold_for_removal=None 
             )
@@ -2038,9 +2072,11 @@ def run_remove_thin_wrapper():
                                            MIN_THICKNESS_PHYS_NM, log_prefix="  [ReOpt Thin] ")
 
                 if success and final_ep is not None:
+                    # --- Modification: Always set state to optimized after successful re-opt ---
                     st.session_state.optimized_ep = final_ep.copy()
-                    st.session_state.current_ep = final_ep.copy()
-                    st.session_state.is_optimized_state = True
+                    st.session_state.current_ep = final_ep.copy() # Also update current_ep to reflect the new state
+                    st.session_state.is_optimized_state = True # Mark state as optimized
+                    # --- Modification End ---
                     st.session_state.last_mse = final_cost
                     qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
                     if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
@@ -2051,9 +2087,11 @@ def run_remove_thin_wrapper():
                     st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Optimized (Post-Remove)"}
                 else:
                     st.warning(f"Layer removed, but re-optimization failed ({msg}). State is AFTER removal but BEFORE failed re-opt attempt.")
+                    # --- Modification: Set state to optimized even if re-opt fails, using the removed structure ---
                     st.session_state.optimized_ep = ep_after_removal.copy() 
                     st.session_state.current_ep = ep_after_removal.copy()
-                    st.session_state.is_optimized_state = True 
+                    st.session_state.is_optimized_state = True # State is now 'optimized' (even if poorly) post-removal
+                    # --- Modification End ---
                     try: 
                         l_min_opt, l_max_opt = validated_inputs['l_range_deb'], validated_inputs['l_range_fin']
                         l_step_optim = validated_inputs['l_step']
@@ -2074,19 +2112,28 @@ def run_remove_thin_wrapper():
                         st.session_state.last_mse = None
                         st.session_state.optimized_qwot_str = "Recalc Error"
                     st.session_state.needs_rerun_calc = True
+                    # --- Modification: Ensure rerun shows the 'optimized' state ---
                     st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': "Optimized (Post-Remove, Re-Opt Fail)"}
+                    # --- Modification End ---
             else:
                 st.info("No layer was removed (criteria not met).")
                 try:
-                    st.session_state.ep_history.pop() 
+                    st.session_state.ep_history.pop() # Remove the state saved if no change occurred
                 except IndexError: pass 
 
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during Thin Layer Removal: {e}")
+            # Attempt to remove the potentially added history item on error
+            try: st.session_state.ep_history.pop()
+            except IndexError: pass
         except Exception as e_fatal:
             st.error(f"Unexpected error during Thin Layer Removal: {e_fatal}")
+            # Attempt to remove the potentially added history item on error
+            try: st.session_state.ep_history.pop()
+            except IndexError: pass
         finally:
             pass 
+
 
 st.set_page_config(layout="wide", page_title="Thin Film Optimizer (Streamlit)")
 
