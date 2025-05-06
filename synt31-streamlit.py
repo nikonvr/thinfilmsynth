@@ -1786,7 +1786,7 @@ def run_scan_optimization_wrapper():
     st.session_state.last_mse = None
     clear_optimized_state()
 
-    with st.spinner("QWOT Scan + Optimization in progress (can be long)..."):
+    with st.spinner("QWOT Scan + Double Optimization in progress (can be very long)..."):
         try:
             if 'initial_layer_number' not in st.session_state:
                 st.session_state.initial_layer_number = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
@@ -1838,8 +1838,10 @@ def run_scan_optimization_wrapper():
             l0_values_to_test = sorted(list(set([l0_nominal, l0_nominal * 1.2, l0_nominal * 0.8])))
             l0_values_to_test = [l for l in l0_values_to_test if l > 1e-6]
 
-            initial_candidates = []
+            # --- Modification: Store candidates per l0 ---
+            scan_candidates = []
             overall_scan_logs = []
+            st.write(f"Phase 1: Scanning QWOT combinations for l0 = {l0_values_to_test}...")
             for l0_scan in l0_values_to_test:
                 st.write(f"Scanning for l0={l0_scan:.1f}...")
                 try:
@@ -1847,6 +1849,7 @@ def run_scan_optimization_wrapper():
                     nL_c_l0, log_l_l0 = _get_nk_at_lambda(nL_mat, l0_scan, EXCEL_FILE_PATH)
                     overall_scan_logs.extend(log_h_l0); overall_scan_logs.extend(log_l_l0)
                     if nH_c_l0 is None or nL_c_l0 is None:
+                        st.warning(f"Could not get indices at l0={l0_scan:.1f}, skipping this value.")
                         continue
 
                     scan_mse, scan_multipliers, scan_logs = _execute_split_stack_scan(
@@ -1857,58 +1860,100 @@ def run_scan_optimization_wrapper():
                     )
                     overall_scan_logs.extend(scan_logs)
                     if scan_multipliers is not None and np.isfinite(scan_mse):
-                        initial_candidates.append({
+                        scan_candidates.append({
                             'l0': l0_scan,
                             'mse_scan': scan_mse,
                             'multipliers': scan_multipliers
                         })
+                        st.write(f"-> Best scan result for l0={l0_scan:.1f}: MSE = {scan_mse:.4e}")
                     else:
-                        pass
+                        st.warning(f"Scan for l0={l0_scan:.1f} did not yield a valid result.")
                 except Exception as e_scan_l0:
                     st.warning(f"Error during scan for l0={l0_scan:.2f}: {e_scan_l0}")
 
-            if not initial_candidates:
-                st.error("QWOT Scan found no valid initial candidates.")
+            if not scan_candidates:
+                st.error("QWOT Scan found no valid initial candidates after scanning all l0 values.")
                 return
 
-            st.write("Local optimization of best scan candidate...")
-            initial_candidates.sort(key=lambda c: c['mse_scan'])
-            best_candidate = initial_candidates[0]
+            # --- Modification: Double Optimization Phase ---
+            st.write(f"\nPhase 2: Double Optimization for {len(scan_candidates)} candidate(s)...")
+            optimization_results = []
+            for idx, candidate in enumerate(scan_candidates):
+                l0_cand = candidate['l0']
+                multipliers_cand = candidate['multipliers']
+                st.write(f"-- Optimizing Candidate {idx+1}/{len(scan_candidates)} (from l0={l0_cand:.1f}, scan MSE={candidate['mse_scan']:.4e}) --")
 
-            ep_start_optim, logs_ep_best = calculate_initial_ep(best_candidate['multipliers'], best_candidate['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-            if ep_start_optim is None:
-                st.error("Failed thickness calculation for best scan candidate.")
+                ep_start_optim, logs_ep_best = calculate_initial_ep(multipliers_cand, l0_cand, nH_mat, nL_mat, EXCEL_FILE_PATH)
+                if ep_start_optim is None:
+                    st.warning(f"Failed thickness calculation for candidate {idx+1}. Skipping.")
+                    continue
+
+                # First Optimization
+                st.write(f"   Running Optimization 1/2...")
+                final_ep_1, success_1, final_cost_1, optim_logs_1, msg_1 = \
+                    _run_core_optimization(ep_start_optim, validated_inputs, active_targets,
+                                           MIN_THICKNESS_PHYS_NM, log_prefix=f"  [OptScan {idx+1}-1] ")
+
+                if success_1 and final_ep_1 is not None:
+                    st.write(f"   Optimization 1/2 finished ({msg_1}). MSE: {final_cost_1:.4e}. Running Optimization 2/2...")
+                    # Second Optimization
+                    final_ep_2, success_2, final_cost_2, optim_logs_2, msg_2 = \
+                        _run_core_optimization(final_ep_1, validated_inputs, active_targets, # Start from result of first opt
+                                               MIN_THICKNESS_PHYS_NM, log_prefix=f"  [OptScan {idx+1}-2] ")
+
+                    if success_2 and final_ep_2 is not None:
+                        st.write(f"   Optimization 2/2 finished ({msg_2}). Final MSE: {final_cost_2:.4e}")
+                        optimization_results.append({
+                            'l0_origin': l0_cand,
+                            'final_ep': final_ep_2,
+                            'final_mse': final_cost_2,
+                            'message': f"Opt1: {msg_1} | Opt2: {msg_2}"
+                        })
+                    else:
+                        st.warning(f"   Optimization 2/2 FAILED for candidate {idx+1}: {msg_2}. Discarding this candidate.")
+                else:
+                    st.warning(f"   Optimization 1/2 FAILED for candidate {idx+1}: {msg_1}. Skipping second optimization.")
+
+            # --- Modification: Final Selection ---
+            if not optimization_results:
+                st.error("Scan + Opt: No candidates successfully completed the double optimization.")
+                clear_optimized_state() # Clear any potential intermediate state
                 return
 
-            final_ep, success, final_cost, optim_logs, msg = \
-                _run_core_optimization(ep_start_optim, validated_inputs, active_targets,
-                                       MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Scan Cand] ")
+            st.write("\nPhase 3: Selecting Best Overall Result...")
+            optimization_results.sort(key=lambda r: r['final_mse'])
+            best_overall_result = optimization_results[0]
 
-            if success and final_ep is not None:
-                st.session_state.optimized_ep = final_ep.copy()
-                st.session_state.current_ep = final_ep.copy()
-                st.session_state.is_optimized_state = True
-                st.session_state.last_mse = final_cost
-                st.session_state.l0 = best_candidate['l0']
-                qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, best_candidate['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-                if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
-                    st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
-                else: st.session_state.optimized_qwot_str = "QWOT N/A"
-                st.success(f"QWOT Scan + Optimization finished ({msg}). Final MSE: {final_cost:.4e}")
-                st.session_state.needs_rerun_calc = True
-                st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Scan+Opt (l0={best_candidate['l0']:.1f})"}
+            final_ep = best_overall_result['final_ep']
+            final_cost = best_overall_result['final_mse']
+            final_l0 = best_overall_result['l0_origin']
+            final_msg = best_overall_result['message']
+
+            st.session_state.optimized_ep = final_ep.copy()
+            st.session_state.current_ep = final_ep.copy()
+            st.session_state.is_optimized_state = True
+            st.session_state.last_mse = final_cost
+            st.session_state.l0 = final_l0 # Update l0 to the one that yielded the best result
+            qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, final_l0, nH_mat, nL_mat, EXCEL_FILE_PATH)
+            if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
+                st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
             else:
-                st.error(f"Local optimization after scan failed: {msg}")
-                clear_optimized_state()
+                st.session_state.optimized_qwot_str = "QWOT N/A"
+
+            st.success(f"Scan + Double Optimization finished. Best result from l0={final_l0:.1f}. Final MSE: {final_cost:.4e}")
+            st.caption(f"Optimization details: {final_msg}")
+            st.session_state.needs_rerun_calc = True
+            st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Scan+Opt*2 (l0={final_l0:.1f})"}
 
         except (ValueError, RuntimeError, TypeError) as e:
-            st.error(f"Error during QWOT Scan + Optimization: {e}")
+            st.error(f"Error during QWOT Scan + Double Optimization: {e}")
             clear_optimized_state()
         except Exception as e_fatal:
-            st.error(f"Unexpected error during QWOT Scan + Optimization: {e_fatal}")
+            st.error(f"Unexpected error during QWOT Scan + Double Optimization: {e_fatal}")
             clear_optimized_state()
         finally:
             pass
+
 
 def run_auto_mode_wrapper():
     st.session_state.last_calc_results = {}
