@@ -1788,11 +1788,29 @@ def run_scan_optimization_wrapper():
 
     with st.spinner("QWOT Scan + Double Optimization in progress (can be very long)..."):
         try:
+            if 'current_qwot' not in st.session_state:
+                st.session_state.current_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
+            if 'l0' not in st.session_state: st.session_state.l0 = 500.0
+            if 'l_step' not in st.session_state: st.session_state.l_step = 10.0
+            if 'auto_thin_threshold' not in st.session_state: st.session_state.auto_thin_threshold = 1.0
+
+            num_layers_nominal_structure = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
+            layers_for_qwot_scan = max(18, num_layers_nominal_structure)
+
+            if layers_for_qwot_scan == 0:
+                st.error("Le nombre de couches calculé pour le scan QWOT est de 0. Impossible de continuer.")
+                return
+            
+            if 'initial_layer_number' not in st.session_state: 
+                st.session_state.initial_layer_number = num_layers_nominal_structure 
+                if st.session_state.initial_layer_number == 0 and num_layers_nominal_structure == 0 : 
+                     pass 
+
+            current_nominal_layers_for_session_state = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
             if 'initial_layer_number' not in st.session_state:
-                st.session_state.initial_layer_number = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
-                if st.session_state.initial_layer_number == 0:
-                    st.error("Nominal QWOT is empty and initial layer number is not defined.")
-                    return
+                 st.session_state.initial_layer_number = current_nominal_layers_for_session_state
+            if st.session_state.get('initial_layer_number', 0) == 0 and current_nominal_layers_for_session_state == 0:
+                st.error("Nominal QWOT is empty and initial_layer_number (from session_state) is 0. Scan will use default, but check QWOT.")
 
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
@@ -1800,14 +1818,14 @@ def run_scan_optimization_wrapper():
                 return
 
             l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
-            if l_min_opt is None:
+            if l_min_opt is None: 
                 st.error("Could not determine lambda range for QWOT Scan+Opt.")
                 return
 
             validated_inputs = {
                 'l0': st.session_state.l0, 'l_step': st.session_state.l_step,
                 'emp_str': st.session_state.current_qwot,
-                'initial_layer_number': st.session_state.initial_layer_number,
+                'initial_layer_number': st.session_state.get('initial_layer_number', layers_for_qwot_scan), 
                 'auto_thin_threshold': st.session_state.auto_thin_threshold,
                 'l_range_deb': l_min_opt, 'l_range_fin': l_max_opt,
             }
@@ -1825,23 +1843,22 @@ def run_scan_optimization_wrapper():
             l_vec_eval_full_np = l_vec_eval_full_np[(l_vec_eval_full_np > 0) & np.isfinite(l_vec_eval_full_np)]
             if not l_vec_eval_full_np.size: raise ValueError("Failed lambda generation for Scan.")
 
-            l_vec_eval_sparse_np = l_vec_eval_full_np[::2]
+            l_vec_eval_sparse_np = l_vec_eval_full_np[::2] 
             if not l_vec_eval_sparse_np.size: raise ValueError("Failed sparse lambda generation for Scan.")
             l_vec_eval_sparse_jax = jnp.asarray(l_vec_eval_sparse_np)
 
             nSub_arr_scan, logs_sub_scan = _get_nk_array_for_lambda_vec(nSub_mat, l_vec_eval_sparse_jax, EXCEL_FILE_PATH)
             if nSub_arr_scan is None: raise RuntimeError("Failed substrate index preparation for scan.")
 
-            active_targets_tuple = tuple((t['min'], t['max'], t['target_min'], t['target_max']) for t in active_targets)
+            active_targets_tuple = tuple((float(t['min']), float(t['max']), float(t['target_min']), float(t['target_max'])) for t in active_targets)
 
             l0_nominal = validated_inputs['l0']
-            l0_values_to_test = sorted(list(set([l0_nominal, l0_nominal * 1.2, l0_nominal * 0.8])))
-            l0_values_to_test = [l for l in l0_values_to_test if l > 1e-6]
+            l0_values_to_test = sorted(list(set([l0_nominal, l0_nominal * 1.2, l0_nominal * 0.8]))) 
+            l0_values_to_test = [l for l in l0_values_to_test if l > 1e-6] 
 
-            # --- Modification: Store candidates per l0 ---
             scan_candidates = []
-            overall_scan_logs = []
-            st.write(f"Phase 1: Scanning QWOT combinations for l0 = {l0_values_to_test}...")
+            overall_scan_logs = [] 
+            st.write(f"Phase 1: Scanning QWOT combinations for l0 = {l0_values_to_test} using {layers_for_qwot_scan} layers...") 
             for l0_scan in l0_values_to_test:
                 st.write(f"Scanning for l0={l0_scan:.1f}...")
                 try:
@@ -1851,14 +1868,14 @@ def run_scan_optimization_wrapper():
                     if nH_c_l0 is None or nL_c_l0 is None:
                         st.warning(f"Could not get indices at l0={l0_scan:.1f}, skipping this value.")
                         continue
-
-                    scan_mse, scan_multipliers, scan_logs = _execute_split_stack_scan(
-                        l0_scan, validated_inputs['initial_layer_number'],
+                    
+                    scan_mse, scan_multipliers, scan_logs_current_l0 = _execute_split_stack_scan(
+                        l0_scan, layers_for_qwot_scan, 
                         nH_c_l0, nL_c_l0,
                         nSub_arr_scan, l_vec_eval_sparse_jax, active_targets_tuple,
-                        add_log
+                        add_log 
                     )
-                    overall_scan_logs.extend(scan_logs)
+                    overall_scan_logs.extend(scan_logs_current_l0) 
                     if scan_multipliers is not None and np.isfinite(scan_mse):
                         scan_candidates.append({
                             'l0': l0_scan,
@@ -1870,12 +1887,11 @@ def run_scan_optimization_wrapper():
                         st.warning(f"Scan for l0={l0_scan:.1f} did not yield a valid result.")
                 except Exception as e_scan_l0:
                     st.warning(f"Error during scan for l0={l0_scan:.2f}: {e_scan_l0}")
-
+            
             if not scan_candidates:
                 st.error("QWOT Scan found no valid initial candidates after scanning all l0 values.")
                 return
 
-            # --- Modification: Double Optimization Phase ---
             st.write(f"\nPhase 2: Double Optimization for {len(scan_candidates)} candidate(s)...")
             optimization_results = []
             for idx, candidate in enumerate(scan_candidates):
@@ -1888,7 +1904,6 @@ def run_scan_optimization_wrapper():
                     st.warning(f"Failed thickness calculation for candidate {idx+1}. Skipping.")
                     continue
 
-                # First Optimization
                 st.write(f"   Running Optimization 1/2...")
                 final_ep_1, success_1, final_cost_1, optim_logs_1, msg_1 = \
                     _run_core_optimization(ep_start_optim, validated_inputs, active_targets,
@@ -1896,9 +1911,8 @@ def run_scan_optimization_wrapper():
 
                 if success_1 and final_ep_1 is not None:
                     st.write(f"   Optimization 1/2 finished ({msg_1}). MSE: {final_cost_1:.4e}. Running Optimization 2/2...")
-                    # Second Optimization
                     final_ep_2, success_2, final_cost_2, optim_logs_2, msg_2 = \
-                        _run_core_optimization(final_ep_1, validated_inputs, active_targets, # Start from result of first opt
+                        _run_core_optimization(final_ep_1, validated_inputs, active_targets,
                                                MIN_THICKNESS_PHYS_NM, log_prefix=f"  [OptScan {idx+1}-2] ")
 
                     if success_2 and final_ep_2 is not None:
@@ -1914,10 +1928,9 @@ def run_scan_optimization_wrapper():
                 else:
                     st.warning(f"   Optimization 1/2 FAILED for candidate {idx+1}: {msg_1}. Skipping second optimization.")
 
-            # --- Modification: Final Selection ---
             if not optimization_results:
                 st.error("Scan + Opt: No candidates successfully completed the double optimization.")
-                clear_optimized_state() # Clear any potential intermediate state
+                clear_optimized_state()
                 return
 
             st.write("\nPhase 3: Selecting Best Overall Result...")
@@ -1926,14 +1939,15 @@ def run_scan_optimization_wrapper():
 
             final_ep = best_overall_result['final_ep']
             final_cost = best_overall_result['final_mse']
-            final_l0 = best_overall_result['l0_origin']
+            final_l0 = best_overall_result['l0_origin'] 
             final_msg = best_overall_result['message']
 
             st.session_state.optimized_ep = final_ep.copy()
-            st.session_state.current_ep = final_ep.copy()
+            st.session_state.current_ep = final_ep.copy() 
             st.session_state.is_optimized_state = True
             st.session_state.last_mse = final_cost
-            st.session_state.l0 = final_l0 # Update l0 to the one that yielded the best result
+            st.session_state.l0 = final_l0 
+
             qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, final_l0, nH_mat, nL_mat, EXCEL_FILE_PATH)
             if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                 st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
@@ -1946,13 +1960,13 @@ def run_scan_optimization_wrapper():
             st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Scan+Opt*2 (l0={final_l0:.1f})"}
 
         except (ValueError, RuntimeError, TypeError) as e:
-            st.error(f"Error during QWOT Scan + Double Optimization: {e}")
+            st.error(f"Error during QWOT Scan + Double Optimization: {e}\n{traceback.format_exc(limit=2)}")
             clear_optimized_state()
         except Exception as e_fatal:
-            st.error(f"Unexpected error during QWOT Scan + Double Optimization: {e_fatal}")
+            st.error(f"Unexpected error during QWOT Scan + Double Optimization: {e_fatal}\n{traceback.format_exc(limit=2)}")
             clear_optimized_state()
         finally:
-            pass
+            pass 
 
 
 def run_auto_mode_wrapper():
