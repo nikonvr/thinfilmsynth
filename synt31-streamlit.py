@@ -2843,27 +2843,38 @@ with main_layout[1]: # Results Column
                                     # Plot small dots for the target points on the optimization grid
                                     # ax_spec.plot(optim_lambdas, optim_target_t, marker='.', color='darkred', linestyle='none', markersize=4, alpha=0.5, label='_nolegend_', zorder=6)
 
-                                # Plot Formatting
+                                                # Plot Formatting
                 ax_spec.set_xlabel("Wavelength (nm)")
                 ax_spec.set_ylabel('Transmittance')
                 ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
                 ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
                 ax_spec.minorticks_on()
-                if len(res_l_plot) > 0 : ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
+                # Ensure res_l_plot exists and is not empty before accessing its elements
+                if 'res_l_plot' in locals() and res_l_plot is not None and len(res_l_plot) > 0 :
+                    ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
                 ax_spec.set_ylim(-0.05, 1.05)
-                if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
+                if 'plotted_target_label' in locals() and 'line_ts' in locals() and (plotted_target_label or (line_ts is not None)):
+                     ax_spec.legend(fontsize=8)
 
                 # Display MSE on plot
-                if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
+                if 'mse_plot' in locals() and mse_plot is not None and np.isfinite(mse_plot):
+                     mse_text = f"MSE = {mse_plot:.3e}"
                 else: mse_text = "MSE: N/A"
                 ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
                                  bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
             except Exception as e_spec:
-                ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
+                # Ensure ax_spec exists before trying to plot error text
+                if 'ax_spec' in locals():
+                    ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
+                else:
+                    st.error(f"Error preparing spectrum plot: {e_spec}")
 
-            plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout slightly
-            st.pyplot(fig_spec)
-            plt.close(fig_spec) # Close figure to free memory
+
+            # Ensure fig_spec exists before trying to adjust layout or plot
+            if 'fig_spec' in locals():
+                plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout slightly
+                st.pyplot(fig_spec)
+                plt.close(fig_spec) # Close figure to free memory
         else:
             st.warning("Missing or invalid calculation data for spectrum display.")
 
@@ -2889,11 +2900,10 @@ with main_layout[1]: # Results Column
                 fig_idx, ax_idx = plt.subplots(figsize=(6, 4)) # Adjusted height
                 try:
                     # Get n+ik at l0 for plotting the profile
+                    # Use _get_nk_at_lambda which should be defined earlier in the full script
                     nH_c_repr, logs_h = _get_nk_at_lambda(nH_plot, l0_plot, EXCEL_FILE_PATH)
                     nL_c_repr, logs_l = _get_nk_at_lambda(nL_plot, l0_plot, EXCEL_FILE_PATH)
                     nSub_c_repr, logs_s = _get_nk_at_lambda(nSub_plot, l0_plot, EXCEL_FILE_PATH)
-                    # Don't add these logs to main log usually, just for calculation
-                    # add_log(logs_h); add_log(logs_l); add_log(logs_s)
 
                     if nH_c_repr is None or nL_c_repr is None or nSub_c_repr is None:
                         raise ValueError("Indices at l0 not found for profile plot.")
@@ -2962,6 +2972,7 @@ with main_layout[1]: # Results Column
                         # Get complex indices at l0 for labeling bars
                         indices_complex_repr = []
                         # Assuming alternating H/L structure for bar chart labeling
+                        # Use _get_nk_at_lambda which should be defined earlier in the full script
                         nH_c_repr, _ = _get_nk_at_lambda(nH_plot, l0_plot, EXCEL_FILE_PATH)
                         nL_c_repr, _ = _get_nk_at_lambda(nL_plot, l0_plot, EXCEL_FILE_PATH)
                         indices_complex_repr = [nH_c_repr if i % 2 == 0 else nL_c_repr for i in range(num_layers)]
@@ -3005,7 +3016,9 @@ with main_layout[1]: # Results Column
 
                     # Plot Formatting
                     ax_stack.set_xlabel('Thickness (nm)')
-                    stack_title_prefix = f'Structure - {state_desc}' # Use state_desc
+                    # Use state_desc which is defined earlier ('Nominal' or 'Optimized')
+                    state_desc = "Optimized" if st.session_state.is_optimized_state else "Nominal"
+                    stack_title_prefix = f'Structure - {state_desc}'
                     ax_stack.set_title(f"{stack_title_prefix} ({num_layers} layers)", fontsize=10)
                     max_ep_plot = max(ep_plot) if num_layers > 0 else 10 # Adjust xlim based on max thickness
                     ax_stack.set_xlim(right=max_ep_plot * 1.1) # Add padding to x-axis
@@ -3031,6 +3044,7 @@ if st.session_state.get('needs_rerun_calc', False) and not st.session_state.get(
     st.session_state.calculating = True # Set lock
 
     # Run the main calculation function
+    # Ensure run_calculation_wrapper is defined earlier in the full script
     run_calculation_wrapper(
         is_optimized_run=params.get('is_optimized_run', False),
         method_name=params.get('method_name', 'Auto Recalc'),
@@ -3039,6 +3053,103 @@ if st.session_state.get('needs_rerun_calc', False) and not st.session_state.get(
     st.session_state.calculating = False # Release lock
     st.rerun() # Rerun the script to update the UI with new results/plots
 
+# --- UI Definition Continuation (from the point where the error occurred) ---
+
+# This section should be placed within the `with main_layout[0]:` block,
+# replacing the original QWOT input and generation logic.
+
+with main_layout[0]: # Configuration Column (Continuing...)
+    # ... (Material Selectors defined earlier) ...
+
+    st.subheader("Nominal Structure")
+    # QWOT Input Area - Value comes directly from session state
+    st.text_area(
+        "QWOT Multipliers (comma-separated)",
+        value=st.session_state.current_qwot, # Use current_qwot as the source
+        key="qwot_input_display", # Use a different key if needed, maybe just for display? Or rely on current_qwot
+        on_change=trigger_nominal_recalc, # Trigger recalc if user manually edits
+        help="Enter Quarter Wave Optical Thickness multipliers (e.g., 1,1,1 or 1,2,1). Assumes H/L/H... starting from incident medium.",
+        height=100
+    )
+    # Update current_qwot if the user manually edits the text area
+    if st.session_state.qwot_input_display != st.session_state.current_qwot:
+         st.session_state.current_qwot = st.session_state.qwot_input_display
+         # Optional: trigger_nominal_recalc() could be called here too if not handled by on_change
+         # clear_optimized_state() # Clear optimization if nominal is manually changed
+
+
+    # Calculate number of layers from the current QWOT string for display
+    num_layers_from_qwot = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
+
+    # l0 and Layer Generation
+    qwot_cols = st.columns([3,2])
+    with qwot_cols[0]:
+        # Ensure 'l0' key exists in session state before accessing
+        l0_value = st.session_state.get('l0', 500.0) # Provide default if missing
+        st.number_input("Reference λ₀ (nm)", value=l0_value, min_value=1.0, format="%.2f", key="l0", on_change=trigger_nominal_recalc)
+    with qwot_cols[1]:
+        # Input for generating '1's - value reflects current QWOT length
+        init_layers_num = st.number_input("N Layers", min_value=0, value=num_layers_from_qwot, step=1, key="init_layers_gen_num_ui", label_visibility="collapsed", help="Number of layers to generate QWOT=1 for.")
+        if st.button("Gen QWOT=1", key="gen_qwot_btn_main", use_container_width=True, help="Generate QWOT string with N layers, all set to 1."):
+            if init_layers_num > 0:
+                new_qwot = ",".join(['1'] * init_layers_num)
+                if new_qwot != st.session_state.current_qwot:
+                    st.session_state.current_qwot = new_qwot
+                    # REMOVED: st.session_state.qwot_input_area = new_qwot
+                    trigger_nominal_recalc() # Trigger recalc because nominal changed
+                    st.rerun() # Rerun to update the text_area display
+            elif st.session_state.current_qwot != "": # If N=0, clear QWOT
+                st.session_state.current_qwot = ""
+                # REMOVED: st.session_state.qwot_input_area = ""
+                trigger_nominal_recalc() # Trigger recalc because nominal changed
+                st.rerun() # Rerun to update the text_area display
+    st.caption(f"Nominal Layers: {num_layers_from_qwot}")
+
+    st.subheader("Targets & Parameters")
+    param_cols = st.columns(2)
+    with param_cols[0]:
+      # Ensure 'l_step' key exists
+      l_step_value = st.session_state.get('l_step', 10.0)
+      st.number_input("λ Step (nm)", value=l_step_value, min_value=0.1, format="%.2f", key="l_step", on_change=trigger_nominal_recalc, help="Step size for optimization/MSE grid and fine plot density.")
+    with param_cols[1]:
+      # Ensure 'auto_thin_threshold' key exists
+      thin_thresh_value = st.session_state.get('auto_thin_threshold', 1.0)
+      st.number_input("Thin Thresh.", value=thin_thresh_value, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_threshold", on_change=trigger_nominal_recalc, help="Threshold for auto thin layer removal (nm) in Auto mode.")
+
+
+    # Target Definition Table
+    hdr_cols = st.columns([0.5, 1, 1, 1, 1])
+    hdrs = ["On", "λ Min", "λ Max", "T Min", "T Max"]
+    for c, h in zip(hdr_cols, hdrs): c.caption(h)
+
+    # Ensure 'targets' exists and is a list
+    if 'targets' not in st.session_state or not isinstance(st.session_state.targets, list):
+        st.session_state.targets = [] # Initialize if missing
+
+    # Assuming 5 targets are always defined or initialized
+    num_target_rows = 5
+    if len(st.session_state.targets) < num_target_rows:
+         # Initialize missing target rows if needed
+         for _ in range(num_target_rows - len(st.session_state.targets)):
+              st.session_state.targets.append({'enabled': False, 'min': 0.0, 'max': 0.0, 'target_min': 0.0, 'target_max': 0.0})
+
+
+    for i in range(num_target_rows): # Iterate up to the expected number of rows
+        target = st.session_state.targets[i]
+        cols = st.columns([0.5, 1, 1, 1, 1])
+        # Use unique keys for each widget
+        current_enabled = target.get('enabled', False)
+        new_enabled = cols[0].checkbox("", value=current_enabled, key=f"target_enable_{i}", label_visibility="collapsed", on_change=trigger_nominal_recalc)
+        st.session_state.targets[i]['enabled'] = new_enabled
+        st.session_state.targets[i]['min'] = cols[1].number_input("λmin", value=target.get('min', 0.0), format="%.1f", step=10.0, key=f"target_min_{i}", label_visibility="collapsed", on_change=trigger_nominal_recalc)
+        st.session_state.targets[i]['max'] = cols[2].number_input("λmax", value=target.get('max', 0.0), format="%.1f", step=10.0, key=f"target_max_{i}", label_visibility="collapsed", on_change=trigger_nominal_recalc)
+        st.session_state.targets[i]['target_min'] = cols[3].number_input("Tmin", value=target.get('target_min', 0.0), min_value=0.0, max_value=1.0, format="%.3f", step=0.01, key=f"target_tmin_{i}", label_visibility="collapsed", on_change=trigger_nominal_recalc)
+        st.session_state.targets[i]['target_max'] = cols[4].number_input("Tmax", value=target.get('target_max', 0.0), min_value=0.0, max_value=1.0, format="%.3f", step=0.01, key=f"target_tmax_{i}", label_visibility="collapsed", on_change=trigger_nominal_recalc)
+
+
 # --- Optional: Display Logs ---
 # with st.expander("Logs"):
-#    st.text_area("Log Messages", value="\n".join(st.session_state.get('log_messages', [])), height=200, disabled=True)
+#    log_content = "\n".join(st.session_state.get('log_messages', ["No logs yet."]))
+#    st.text_area("Log Messages", value=log_content, height=200, disabled=True, key="log_display_area")
+
+
