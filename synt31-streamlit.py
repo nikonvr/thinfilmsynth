@@ -1202,7 +1202,7 @@ def run_auto_mode(initial_ep: Optional[np.ndarray],
                             best_mse_so_far = float(np.array(current_mse_jax))
                             if not np.isfinite(best_mse_so_far): best_mse_so_far = np.inf
                             # log_callback(f"      MSE after failed re-opt (reduced structure, not opt): {best_mse_so_far:.6e}")
-                            except Exception as e_cost_fail:
+                        except Exception as e_cost_fail:
                             # log_callback(f"      ERROR recalculating MSE after failed re-opt: {e_cost_fail}"); best_mse_so_far = np.inf
                         break # Stop thinning attempts for this cycle
                 else: # No structure change from removal function
