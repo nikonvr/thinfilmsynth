@@ -1678,6 +1678,8 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             st.error(f"Error during {calc_type} calculation: {e}")
         except Exception as e_fatal:
             st.error(f"Unexpected error during {calc_type} calculation: {e_fatal}")
+        finally:
+             pass # Added finally block
 
 def run_local_optimization_wrapper():
     st.session_state.last_calc_results = {}
@@ -2294,8 +2296,9 @@ with col_results:
                 else: mse_text = "MSE: N/A"
                 ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
                              bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
-            else:
-                ax_spec.text(0.5, 0.5, "No spectral data", ha='center', va='center', transform=ax_spec.transAxes)
+            except Exception as e_spec:
+                ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
+
             plt.tight_layout(rect=[0, 0, 1, 0.95]) 
             st.pyplot(fig_spec)
             plt.close(fig_spec) 
