@@ -15,98 +15,119 @@ import datetime
 import traceback
 from collections import deque
 
+# --- Constants ---
 MIN_THICKNESS_PHYS_NM = 0.01
 BASE_NEEDLE_THICKNESS_NM = 0.1
 DEFAULT_NEEDLE_SCAN_STEP_NM = 2.0
 AUTO_NEEDLES_PER_CYCLE = 5
 AUTO_MAX_CYCLES = 5
 MSE_IMPROVEMENT_TOLERANCE = 1e-9
-EXCEL_FILE_PATH = "indices.xlsx"
-MAXITER_HARDCODED = 1000
-MAXFUN_HARDCODED = 1000
+EXCEL_FILE_PATH = "indices.xlsx" # Assurez-vous que ce fichier existe au bon endroit
+MAXITER_HARDCODED = 1000 # Max iterations for scipy.optimize.minimize
+MAXFUN_HARDCODED = 1000  # Max function evaluations for scipy.optimize.minimize
 
+
+# --- Data Loading and Preparation ---
 @st.cache_data
 def load_material_data_from_xlsx_sheet(file_path: str, sheet_name: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """Loads and validates material data from a specific sheet in an Excel file."""
     try:
         try:
             df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
         except FileNotFoundError:
-            st.error(f"Excel file '{file_path}' not found. Please check its presence.")
+            st.error(f"Fichier Excel '{file_path}' introuvable. Veuillez vérifier sa présence.")
             return None, None, None
         except Exception as e:
-            st.error(f"Error reading Excel ('{file_path}', sheet '{sheet_name}'): {e}")
+            st.error(f"Erreur lors de la lecture d'Excel ('{file_path}', feuille '{sheet_name}'): {e}")
             return None, None, None
 
         numeric_df = df.apply(pd.to_numeric, errors='coerce')
-        numeric_df = numeric_df.dropna(how='all')
+        numeric_df = numeric_df.dropna(how='all') # Drop rows that are all NaN
 
+        # Ensure at least 3 columns and drop rows with NaNs in these critical columns
         if numeric_df.shape[1] >= 3:
-            cols_to_check = numeric_df.columns[:3]
+            cols_to_check = numeric_df.columns[:3] # Wavelength, n, k
             numeric_df = numeric_df.dropna(subset=cols_to_check)
         else:
+            # st.warning(f"La feuille '{sheet_name}' dans '{file_path}' ne contient pas au moins 3 colonnes numériques. Le matériau pourrait ne pas se charger correctement.")
             return np.array([]), np.array([]), np.array([])
 
         if numeric_df.empty:
+            # st.warning(f"Aucune donnée numérique valide trouvée dans '{sheet_name}' après nettoyage.")
             return np.array([]), np.array([]), np.array([])
         try:
-            numeric_df = numeric_df.sort_values(by=numeric_df.columns[0])
+            numeric_df = numeric_df.sort_values(by=numeric_df.columns[0]) # Sort by wavelength
         except IndexError:
+            # st.error(f"Erreur : Impossible de trier les données pour la feuille '{sheet_name}'. Colonne d'index 0 manquante ?")
             return np.array([]), np.array([]), np.array([])
+
 
         l_nm = numeric_df.iloc[:, 0].values.astype(np.float64)
         n = numeric_df.iloc[:, 1].values.astype(np.float64)
         k = numeric_df.iloc[:, 2].values.astype(np.float64)
 
-        if np.any(k < -1e-9):
+        # Ensure k is non-negative
+        if np.any(k < -1e-9): # Allow for small negative due to float precision
+            # invalid_k_indices = np.where(k < -1e-9)[0]
+            # st.warning(f"Valeurs k négatives détectées et mises à 0 pour '{sheet_name}' aux indices : {invalid_k_indices.tolist()}")
             k = np.maximum(k, 0.0)
 
-        if len(l_nm) == 0:
+        if len(l_nm) == 0: # No data rows left after processing
+            # st.warning(f"Aucune ligne de données valide après conversion dans '{sheet_name}'.")
             return np.array([]), np.array([]), np.array([])
 
+        # st.success(f"Données chargées depuis '{sheet_name}': {len(l_nm)} points [{l_nm.min():.1f}-{l_nm.max():.1f} nm]")
         return l_nm, n, k
 
     except ValueError as ve:
-        st.error(f"Excel Value Error for sheet '{sheet_name}': {ve}")
+        st.error(f"Erreur de valeur Excel pour la feuille '{sheet_name}': {ve}")
         return None, None, None
-    except Exception as e:
-        st.error(f"Unexpected error reading Excel sheet '{sheet_name}': {type(e).__name__} - {e}")
+    except Exception as e: # Catch-all for other unexpected errors
+        st.error(f"Erreur inattendue lors de la lecture de la feuille Excel '{sheet_name}': {type(e).__name__} - {e}")
         return None, None, None
 
 def get_available_materials_from_excel(excel_path: str) -> List[str]:
+    """Reads sheet names from an Excel file to list available materials."""
     try:
         xl = pd.ExcelFile(excel_path)
+        # Filter out default sheet names like "Sheet1", "Sheet2", etc.
         sheet_names = [name for name in xl.sheet_names if not name.startswith("Sheet")]
         return sheet_names
     except FileNotFoundError:
-        st.error(f"Excel file '{excel_path}' not found for listing materials.")
+        st.error(f"Fichier Excel '{excel_path}' introuvable pour lister les matériaux.")
         return []
     except Exception as e:
-        st.error(f"Error reading sheet names from '{excel_path}': {e}")
+        st.error(f"Erreur lors de la lecture des noms de feuilles depuis '{excel_path}': {e}")
         return []
 
+# --- JAX Accelerated Optical Functions ---
 @jax.jit
 def get_n_fused_silica(l_nm: jnp.ndarray) -> jnp.ndarray:
-    n = jnp.full_like(l_nm, 1.46, dtype=jnp.float64)
-    k_val = jnp.zeros_like(n)
+    """Returns n+ik for Fused Silica (constant approximation)."""
+    n = jnp.full_like(l_nm, 1.46, dtype=jnp.float64) # Approximate n for visible range
+    k_val = jnp.zeros_like(n) # k is very low in visible
     return n + 1j * k_val
 
 @jax.jit
 def get_n_bk7(l_nm: jnp.ndarray) -> jnp.ndarray:
-    n = jnp.full_like(l_nm, 1.523, dtype=jnp.float64)
-    k_val = jnp.zeros_like(n)
+    """Returns n+ik for BK7 glass (constant approximation)."""
+    n = jnp.full_like(l_nm, 1.523, dtype=jnp.float64) # Approximate n for visible range
+    k_val = jnp.zeros_like(n) # k is very low in visible
     return n + 1j * k_val
 
 @jax.jit
 def get_n_d263(l_nm: jnp.ndarray) -> jnp.ndarray:
-    n = jnp.full_like(l_nm, 1.523, dtype=jnp.float64)
-    k_val = jnp.zeros_like(n)
+    """Returns n+ik for D263 glass (constant approximation)."""
+    n = jnp.full_like(l_nm, 1.523, dtype=jnp.float64) # Approximate n for visible range
+    k_val = jnp.zeros_like(n) # k is very low in visible
     return n + 1j * k_val
 
 @jax.jit
 def interp_nk_cached(l_target: jnp.ndarray, l_data: jnp.ndarray, n_data: jnp.ndarray, k_data: jnp.ndarray) -> jnp.ndarray:
+    """Interpolates n and k data to target wavelengths. Ensures k >= 0."""
     n_interp = jnp.interp(l_target, l_data, n_data)
     k_interp_raw = jnp.interp(l_target, l_data, k_data)
-    k_interp = jnp.maximum(k_interp_raw, 0.0)
+    k_interp = jnp.maximum(k_interp_raw, 0.0) # Force k to be non-negative
     return n_interp + 1j * k_interp
 
 MaterialInputType = Union[complex, float, int, str, Tuple[np.ndarray, np.ndarray, np.ndarray]]
@@ -114,14 +135,22 @@ MaterialInputType = Union[complex, float, int, str, Tuple[np.ndarray, np.ndarray
 def _get_nk_array_for_lambda_vec(material_definition: MaterialInputType,
                                    l_vec_target_jnp: jnp.ndarray,
                                    excel_file_path: str) -> Optional[jnp.ndarray]:
+    """
+    Resolves material definition to an array of n+ik values for a vector of wavelengths.
+    Handles constant values, named materials (Excel sheets), and raw (l,n,k) tuples.
+    """
     try:
         if isinstance(material_definition, (complex, float, int)):
             nk_complex = jnp.asarray(material_definition, dtype=jnp.complex128)
+            # Validate and adjust constant n' and k
             if nk_complex.real <= 0:
+                # st.warning(f"Constant index n'={nk_complex.real} <= 0 for '{material_definition}'. Using n'=1.0.")
                 nk_complex = complex(1.0, nk_complex.imag)
             if nk_complex.imag < 0:
+                # st.warning(f"Constant index k={nk_complex.imag} < 0 for '{material_definition}'. Using k=0.0.")
                 nk_complex = complex(nk_complex.real, 0.0)
             result = jnp.full(l_vec_target_jnp.shape, nk_complex)
+
         elif isinstance(material_definition, str):
             mat_upper = material_definition.upper()
             if mat_upper == "FUSED SILICA":
@@ -130,46 +159,54 @@ def _get_nk_array_for_lambda_vec(material_definition: MaterialInputType,
                 result = get_n_bk7(l_vec_target_jnp)
             elif mat_upper == "D263":
                 result = get_n_d263(l_vec_target_jnp)
-            else:
+            else: # Assumed to be an Excel sheet name
                 sheet_name = material_definition
                 l_data, n_data, k_data = load_material_data_from_xlsx_sheet(excel_file_path, sheet_name)
-                if l_data is None or len(l_data) == 0:
-                    st.error(f"Could not load or empty data for material '{sheet_name}' from {excel_file_path}.")
+                if l_data is None or len(l_data) == 0: # Check if loading failed or returned empty
+                    st.error(f"Impossible de charger ou données vides pour le matériau '{sheet_name}' depuis {excel_file_path}.")
                     return None
                 l_data_jnp, n_data_jnp, k_data_jnp = map(jnp.asarray, (l_data, n_data, k_data))
-                l_target_min = jnp.min(l_vec_target_jnp)
-                l_target_max = jnp.max(l_vec_target_jnp)
-                l_data_min = jnp.min(l_data_jnp)
-                l_data_max = jnp.max(l_data_jnp)
-                if l_target_min < l_data_min - 1e-6 or l_target_max > l_data_max + 1e-6:
-                    pass
+
+                # Check for extrapolation
+                l_target_min, l_target_max = jnp.min(l_vec_target_jnp), jnp.max(l_vec_target_jnp)
+                l_data_min, l_data_max = jnp.min(l_data_jnp), jnp.max(l_data_jnp)
+                if l_target_min < l_data_min - 1e-6 or l_target_max > l_data_max + 1e-6: # 1e-6 for float precision
+                    # st.warning(f"L'interpolation pour '{sheet_name}' peut extrapoler au-delà de la plage de données [{l_data_min:.1f}, {l_data_max:.1f}] nm (cible : [{l_target_min:.1f}, {l_target_max:.1f}] nm).")
+                    pass # Allow extrapolation, JAX interp handles it
                 result = interp_nk_cached(l_vec_target_jnp, l_data_jnp, n_data_jnp, k_data_jnp)
-        elif isinstance(material_definition, tuple) and len(material_definition) == 3:
+
+        elif isinstance(material_definition, tuple) and len(material_definition) == 3: # Raw (l,n,k) data
             l_data, n_data, k_data = material_definition
             l_data_jnp, n_data_jnp, k_data_jnp = map(jnp.asarray, (l_data, n_data, k_data))
-            if not len(l_data_jnp): raise ValueError("Raw material data empty.")
+            if not len(l_data_jnp): raise ValueError("Données matériau brutes (tuple l,n,k) vides.")
+            # Ensure data is sorted by wavelength for interpolation
             sort_indices = jnp.argsort(l_data_jnp)
-            l_data_jnp = l_data_jnp[sort_indices]
-            n_data_jnp = n_data_jnp[sort_indices]
-            k_data_jnp = k_data_jnp[sort_indices]
-            if np.any(k_data_jnp < -1e-9):
+            l_data_jnp, n_data_jnp, k_data_jnp = l_data_jnp[sort_indices], n_data_jnp[sort_indices], k_data_jnp[sort_indices]
+            if np.any(k_data_jnp < -1e-9): # Check for negative k
+                # st.warning("k<0 détecté dans les données matériau brutes (l,n,k). Valeurs clampées à 0.")
                 k_data_jnp = jnp.maximum(k_data_jnp, 0.0)
             result = interp_nk_cached(l_vec_target_jnp, l_data_jnp, n_data_jnp, k_data_jnp)
         else:
-            raise TypeError(f"Unsupported material definition type: {type(material_definition)}")
+            raise TypeError(f"Type de définition de matériau non supporté : {type(material_definition)}")
 
+        # Final validation of the resulting n+ik array
         if jnp.any(jnp.isnan(result.real)) or jnp.any(result.real <= 0):
+            # st.warning(f"n'<=0 ou NaN détecté pour '{material_definition}'. Remplacé par n'=1.")
             result = jnp.where(jnp.isnan(result.real) | (result.real <= 0), 1.0 + 1j*result.imag, result)
         if jnp.any(jnp.isnan(result.imag)) or jnp.any(result.imag < 0):
+            # st.warning(f"k<0 ou NaN détecté pour '{material_definition}'. Remplacé par k=0.")
             result = jnp.where(jnp.isnan(result.imag) | (result.imag < 0), result.real + 0.0j, result)
         return result
+
     except Exception as e:
-        st.error(f"Critical error preparing material data for '{material_definition}': {e}")
+        st.error(f"Erreur critique lors de la préparation des données matériau pour '{material_definition}': {e}")
         return None
 
+
 def _get_nk_at_lambda(material_definition: MaterialInputType, l_nm_target: float, excel_file_path: str) -> Optional[complex]:
+    """Gets n+ik for a single target wavelength."""
     if l_nm_target <= 0:
-        st.error(f"Target wavelength {l_nm_target}nm is invalid for getting n+ik.")
+        st.error(f"Longueur d'onde cible {l_nm_target}nm invalide pour obtenir n+ik.")
         return None
     l_vec_jnp = jnp.array([l_nm_target], dtype=jnp.float64)
     nk_array = _get_nk_array_for_lambda_vec(material_definition, l_vec_jnp, excel_file_path)
@@ -178,17 +215,20 @@ def _get_nk_at_lambda(material_definition: MaterialInputType, l_nm_target: float
     else:
         return complex(nk_array[0])
 
+
 @jax.jit
 def _compute_layer_matrix_scan_step_jit(carry_matrix: jnp.ndarray, layer_data: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]) -> Tuple[jnp.ndarray, None]:
-    thickness, Ni, l_val = layer_data
-    eta = Ni
-    safe_l_val = jnp.maximum(l_val, 1e-9)
-    phi = (2 * jnp.pi / safe_l_val) * (Ni * thickness)
+    """Computes the characteristic matrix for a single layer and multiplies with carry_matrix."""
+    thickness, Ni, l_val = layer_data # Ni is n+ik of the layer, l_val is current wavelength
+    eta = Ni # Effective refractive index for normal incidence
+    safe_l_val = jnp.maximum(l_val, 1e-9) # Avoid division by zero if lambda is zero
+    phi = (2 * jnp.pi / safe_l_val) * (Ni * thickness) # Phase thickness
     cos_phi = jnp.cos(phi)
     sin_phi = jnp.sin(phi)
 
+    # Conditional execution: if thickness is negligible, layer matrix is identity
     def compute_M_layer(thickness_: jnp.ndarray) -> jnp.ndarray:
-        safe_eta = jnp.where(jnp.abs(eta) < 1e-12, 1e-12 + 0j, eta)
+        safe_eta = jnp.where(jnp.abs(eta) < 1e-12, 1e-12 + 0j, eta) # Avoid division by zero if eta is close to zero
         m01 = (1j / safe_eta) * sin_phi
         m10 = 1j * eta * sin_phi
         M_layer = jnp.array([[cos_phi, m01], [m10, cos_phi]], dtype=jnp.complex128)
@@ -285,7 +325,7 @@ def calculate_T_from_ep_jax(ep_vector: Union[np.ndarray, List[float]],
     nSub_arr = _get_nk_array_for_lambda_vec(nSub_material, l_vec_jnp, excel_file_path)
 
     if nH_arr is None or nL_arr is None or nSub_arr is None:
-        st.error("Failed to load one or more material indices for T(lambda) calculation.")
+        st.error("Impossible de charger un ou plusieurs indices de matériaux pour le calcul T(lambda).")
         return None
 
     # JIT compile the single wavelength calculation function
@@ -323,7 +363,7 @@ def calculate_T_from_ep_arbitrary_jax(ep_vector: Union[np.ndarray, List[float]],
     num_layers = len(ep_vector_jnp)
 
     if num_layers != len(material_sequence):
-        st.error("Error: Size of ep_vector and material_sequence must match for arbitrary calculation.")
+        st.error("Erreur : La taille de ep_vector et material_sequence doit correspondre pour le calcul arbitraire.")
         return None
 
     if not l_vec_jnp.size:
@@ -341,14 +381,14 @@ def calculate_T_from_ep_arbitrary_jax(ep_vector: Union[np.ndarray, List[float]],
     for i, mat_name in enumerate(material_sequence):
         nk_arr = _get_nk_array_for_lambda_vec(mat_name, l_vec_jnp, excel_file_path)
         if nk_arr is None:
-            st.error(f"Critical error: Failed to load material '{mat_name}' (layer {i+1}).")
+            st.error(f"Erreur critique : Impossible de charger le matériau '{mat_name}' (couche {i+1}).")
             materials_ok = False
             break
         layer_indices_list.append(nk_arr)
 
     nSub_arr = _get_nk_array_for_lambda_vec(nSub_material, l_vec_jnp, excel_file_path)
     if nSub_arr is None:
-        st.error("Critical error: Failed to load substrate material.")
+        st.error("Erreur critique : Impossible de charger le matériau du substrat.")
         materials_ok = False
 
     if not materials_ok:
@@ -385,7 +425,7 @@ def calculate_initial_ep(emp: Union[List[float], Tuple[float,...]], l0: float,
     ep_initial = np.zeros(num_layers, dtype=np.float64)
 
     if l0 <= 0:
-        st.warning(f"l0={l0} <= 0 in calculate_initial_ep. Initial thicknesses set to 0.")
+        st.warning(f"l0={l0} <= 0 dans calculate_initial_ep. Épaisseurs initiales mises à 0.")
         return ep_initial
 
     # Get complex indices at the reference wavelength l0
@@ -393,14 +433,14 @@ def calculate_initial_ep(emp: Union[List[float], Tuple[float,...]], l0: float,
     nL_complex_at_l0 = _get_nk_at_lambda(nL0_material, l0, excel_file_path)
 
     if nH_complex_at_l0 is None or nL_complex_at_l0 is None:
-        st.error(f"Critical error getting H or L indices at l0={l0}nm for initial thickness calculation.")
+        st.error(f"Erreur critique lors de l'obtention des indices H ou L à l0={l0}nm pour le calcul de l'épaisseur initiale.")
         return None
 
     nH_real_at_l0 = nH_complex_at_l0.real
     nL_real_at_l0 = nL_complex_at_l0.real
 
     if nH_real_at_l0 <= 1e-9 or nL_real_at_l0 <= 1e-9:
-        st.warning(f"n'H({nH_real_at_l0:.3f}) or n'L({nL_real_at_l0:.3f}) at l0={l0}nm is <= 0. QWOT calculation may be incorrect.")
+        st.warning(f"n'H({nH_real_at_l0:.3f}) ou n'L({nL_real_at_l0:.3f}) à l0={l0}nm est <= 0. Le calcul QWOT peut être incorrect.")
 
     # Calculate physical thickness for each layer
     valid_indices = True
@@ -413,20 +453,20 @@ def calculate_initial_ep(emp: Union[List[float], Tuple[float,...]], l0: float,
             ep_initial[i] = 0.0
             if multiplier > 1e-9: # If QWOT was non-zero but index is bad
                 layer_type = "H" if is_H_layer else "L"
-                st.error(f"Layer {i+1} ({layer_type}) has QWOT={multiplier} but thickness=0 (likely n'({layer_type},l0)={n_real_layer_at_l0:.3f} <= 0).")
+                st.error(f"Couche {i+1} ({layer_type}) a QWOT={multiplier} mais épaisseur=0 (probablement n'({layer_type},l0)={n_real_layer_at_l0:.3f} <= 0).")
                 valid_indices = False
         else:
             ep_initial[i] = multiplier * l0 / (4.0 * n_real_layer_at_l0)
 
     if not valid_indices:
-        st.error("Error during initial thickness calculation due to invalid indices at l0.")
+        st.error("Erreur lors du calcul de l'épaisseur initiale en raison d'indices invalides à l0.")
         return None
 
     # Apply minimum physical thickness constraint
     ep_initial_phys = np.where(ep_initial < MIN_THICKNESS_PHYS_NM, 0.0, ep_initial)
     num_clamped_zero = np.sum((ep_initial > 1e-12) & (ep_initial < MIN_THICKNESS_PHYS_NM))
     if num_clamped_zero > 0:
-        # st.warning(f"{num_clamped_zero} initial thicknesses < {MIN_THICKNESS_PHYS_NM}nm were set to 0.")
+        # st.warning(f"{num_clamped_zero} épaisseurs initiales < {MIN_THICKNESS_PHYS_NM}nm ont été mises à 0.")
         ep_initial = np.where(ep_initial < MIN_THICKNESS_PHYS_NM, 0.0, ep_initial)
 
     return ep_initial
@@ -440,7 +480,7 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
     qwot_multipliers = np.full(num_layers, np.nan, dtype=np.float64)
 
     if l0 <= 0:
-        st.warning(f"l0={l0} <= 0 in calculate_qwot_from_ep. QWOT set to NaN.")
+        st.warning(f"l0={l0} <= 0 dans calculate_qwot_from_ep. QWOT mis à NaN.")
         return qwot_multipliers
 
     # Get indices at l0
@@ -448,14 +488,14 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
     nL_complex_at_l0 = _get_nk_at_lambda(nL0_material, l0, excel_file_path)
 
     if nH_complex_at_l0 is None or nL_complex_at_l0 is None:
-        st.error(f"Error calculating QWOT: H/L indices not found at l0={l0}nm.")
+        st.error(f"Erreur de calcul QWOT : Indices H/L non trouvés à l0={l0}nm.")
         return None
 
     nH_real_at_l0 = nH_complex_at_l0.real
     nL_real_at_l0 = nL_complex_at_l0.real
 
     if nH_real_at_l0 <= 1e-9 or nL_real_at_l0 <= 1e-9:
-        st.warning(f"n'H({nH_real_at_l0:.3f}) or n'L({nL_real_at_l0:.3f}) at l0={l0}nm is <= 0. QWOT calculation may be incorrect/NaN.")
+        st.warning(f"n'H({nH_real_at_l0:.3f}) ou n'L({nL_real_at_l0:.3f}) à l0={l0}nm est <= 0. Le calcul QWOT peut être incorrect/NaN.")
 
     # Calculate QWOT for each layer
     indices_ok = True
@@ -464,7 +504,7 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
         if n_real_layer_at_l0 <= 1e-9:
             if ep_vector[i] > 1e-9 : # If thickness is non-zero but index is bad
                 layer_type = "H" if i % 2 == 0 else "L"
-                # st.warning(f"Cannot calculate QWOT for layer {i+1} ({layer_type}) because n'({l0}nm) <= 0.")
+                # st.warning(f"Impossible de calculer QWOT pour la couche {i+1} ({layer_type}) car n'({l0}nm) <= 0.")
                 indices_ok = False # QWOT will remain NaN
             else: # thickness is zero, so QWOT is zero
                 qwot_multipliers[i] = 0.0
@@ -472,7 +512,7 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
             qwot_multipliers[i] = ep_vector[i] * (4.0 * n_real_layer_at_l0) / l0
 
     if not indices_ok:
-        st.warning("Some QWOT values could not be calculated (invalid indices at l0). They appear as NaN.")
+        st.warning("Certaines valeurs QWOT n'ont pas pu être calculées (indices invalides à l0). Elles apparaissent comme NaN.")
         return qwot_multipliers # Return array with NaNs
     else:
         return qwot_multipliers
