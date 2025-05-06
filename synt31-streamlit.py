@@ -194,7 +194,7 @@ def _compute_layer_matrix_scan_step_jit(carry_matrix: jnp.ndarray, layer_data: T
         M_layer = jnp.array([[cos_phi, m01], [m10, cos_phi]], dtype=jnp.complex128)
         return M_layer @ carry_matrix
 
-        def compute_identity(thickness_: jnp.ndarray) -> jnp.ndarray:
+    def compute_identity(thickness_: jnp.ndarray) -> jnp.ndarray:
         return carry_matrix # Pass through if thickness is effectively zero
 
     # If thickness is very small, effectively skip this layer by returning identity matrix product
