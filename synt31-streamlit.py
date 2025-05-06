@@ -25,6 +25,9 @@ EXCEL_FILE_PATH = "indices.xlsx"
 MAXITER_HARDCODED = 1000
 MAXFUN_HARDCODED = 1000
 
+def add_log(message: Union[str, List[str]]):
+    pass
+
 @st.cache_data
 def load_material_data_from_xlsx_sheet(file_path: str, sheet_name: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], List[str]]:
     logs = []
@@ -126,8 +129,8 @@ def interp_nk_cached(l_target: jnp.ndarray, l_data: jnp.ndarray, n_data: jnp.nda
 MaterialInputType = Union[complex, float, int, str, Tuple[np.ndarray, np.ndarray, np.ndarray]]
 
 def _get_nk_array_for_lambda_vec(material_definition: MaterialInputType,
-                                   l_vec_target_jnp: jnp.ndarray,
-                                   excel_file_path: str) -> Tuple[Optional[jnp.ndarray], List[str]]:
+                                     l_vec_target_jnp: jnp.ndarray,
+                                     excel_file_path: str) -> Tuple[Optional[jnp.ndarray], List[str]]:
     logs = []
     try:
         if isinstance(material_definition, (complex, float, int)):
@@ -363,7 +366,7 @@ def calculate_T_from_ep_arbitrary_jax(ep_vector: Union[np.ndarray, List[float]],
 
     if layer_indices_list:
         layer_indices_arr = jnp.stack(layer_indices_list, axis=0)
-    else: # Should not happen if num_layers > 0, but as a safeguard
+    else: 
         layer_indices_arr = jnp.empty((0, len(l_vec_jnp)), dtype=jnp.complex128)
 
     logs.append(f"Index preparation finished in {time.time() - start_time:.3f}s.")
@@ -468,14 +471,14 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
                 layer_type = "H" if i % 2 == 0 else "L"
                 logs.append(f"Warning: Cannot calculate QWOT for layer {i+1} ({layer_type}) because n'({l0}nm) <= 0.")
                 indices_ok = False
-            else: # thickness is zero, so QWOT is zero
+            else: 
                 qwot_multipliers[i] = 0.0
         else:
             qwot_multipliers[i] = ep_vector[i] * (4.0 * n_real_layer_at_l0) / l0
 
     if not indices_ok:
         st.warning("Some QWOT values could not be calculated (invalid indices at l0). They appear as NaN.")
-        return qwot_multipliers, logs # Return array with NaNs
+        return qwot_multipliers, logs 
     else:
         return qwot_multipliers, logs
 
@@ -515,9 +518,9 @@ def calculate_final_mse(res: Dict[str, np.ndarray], active_targets: List[Dict]) 
 
             if calculated_Ts_in_zone.size == 0: continue
 
-            if abs(l_max - l_min) < 1e-9: # Single point target
+            if abs(l_max - l_min) < 1e-9: 
                 interpolated_target_t = np.full_like(target_lambdas_in_zone, t_min)
-            else: # Linear interpolation for target
+            else: 
                 slope = (t_max - t_min) / (l_max - l_min)
                 interpolated_target_t = t_min + slope * (target_lambdas_in_zone - l_min)
 
@@ -721,36 +724,12 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
 def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness_phys: float,
                                          log_prefix: str = "", target_layer_index: Optional[int] = None,
                                          threshold_for_removal: Optional[float] = None) -> Tuple[Optional[np.ndarray], bool, List[str]]:
-    """
-    Identifies the thinnest layer (optionally below a threshold or a specific target)
-    and performs removal/merging based on its position (first, last, middle).
-
-    - If first: Removes first two layers.
-    - If last: Removes ONLY the last layer. (MODIFIED BEHAVIOR)
-    - If middle: Removes the thin layer and merges its neighbors.
-
-    Args:
-        ep_vector_in: Current thickness vector.
-        min_thickness_phys: Minimum physical thickness allowed.
-        log_prefix: Prefix for log messages.
-        target_layer_index: If specified, attempts to remove/merge around this layer index.
-        threshold_for_removal: If specified (and no target_layer_index), only considers layers thinner than this for automatic removal.
-
-    Returns:
-        Tuple containing:
-            - Modified thickness vector (or original if no change).
-            - Boolean flag indicating if the structure was changed.
-            - List of log messages.
-    """
     current_ep = ep_vector_in.copy()
     logs = []
     num_layers = len(current_ep)
     structure_changed = False
-    ep_after_merge = None # Initialize result vector
+    ep_after_merge = None 
 
-    # --- Basic Checks ---
-    # Cannot remove/merge if only 2 layers or less, unless a specific target is given
-    # (Targeting might be intended to remove the whole structure if <=2 layers)
     if num_layers <= 2 and target_layer_index is None:
         logs.append(f"{log_prefix}Structure <= 2 layers. Removal/merge not possible without target.")
         return current_ep, False, logs
@@ -759,11 +738,9 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
         return current_ep, False, logs
 
     try:
-        # --- Identify Target Layer ---
-        thin_layer_index = -1 # Sentinel value
+        thin_layer_index = -1 
         min_thickness_found = np.inf
 
-        # 1. Check for manually targeted layer
         if target_layer_index is not None:
             if 0 <= target_layer_index < num_layers and current_ep[target_layer_index] >= min_thickness_phys:
                 thin_layer_index = target_layer_index
@@ -771,11 +748,9 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
                 logs.append(f"{log_prefix}Manual targeting layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
             else:
                 logs.append(f"{log_prefix}Manual target {target_layer_index+1} invalid/too thin. Auto search.")
-                target_layer_index = None # Fallback to auto search
+                target_layer_index = None 
 
-        # 2. Auto-search if no valid manual target
         if target_layer_index is None:
-            # Find indices of layers thick enough to be considered
             candidate_indices = np.where(current_ep >= min_thickness_phys)[0]
             if candidate_indices.size == 0:
                 logs.append(f"{log_prefix}No layer >= {min_thickness_phys:.3f} nm found.")
@@ -785,7 +760,6 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
             indices_to_consider = candidate_indices
             thicknesses_to_consider = candidate_thicknesses
 
-            # Apply optional threshold filter
             if threshold_for_removal is not None:
                 mask_below_threshold = thicknesses_to_consider < threshold_for_removal
                 if np.any(mask_below_threshold):
@@ -793,21 +767,17 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
                     thicknesses_to_consider = thicknesses_to_consider[mask_below_threshold]
                     logs.append(f"{log_prefix}Searching among layers < {threshold_for_removal:.3f} nm.")
                 else:
-                    # No layers below threshold found
                     logs.append(f"{log_prefix}No eligible layer (< {threshold_for_removal:.3f} nm) found.")
-                    return current_ep, False, logs # No change possible under this criteria
+                    return current_ep, False, logs 
 
-            # Find the thinnest among the remaining candidates
             if indices_to_consider.size > 0:
                 min_idx_local = np.argmin(thicknesses_to_consider)
                 thin_layer_index = indices_to_consider[min_idx_local]
                 min_thickness_found = thicknesses_to_consider[min_idx_local]
             else:
-                # This case should ideally not be reached if threshold logic is correct
                 logs.append(f"{log_prefix}No final candidate layer found.")
                 return current_ep, False, logs
 
-        # --- Perform Action Based on Identified Layer ---
         if thin_layer_index == -1:
             logs.append(f"{log_prefix}Failed to identify layer (unexpected case).")
             return current_ep, False, logs
@@ -815,64 +785,53 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
         thin_layer_thickness = current_ep[thin_layer_index]
         logs.append(f"{log_prefix}Layer identified for action: Index {thin_layer_index} (Layer {thin_layer_index + 1}), thickness {thin_layer_thickness:.3f} nm.")
 
-        # Check again, as target_layer_index might have been set for <=2 layers
-        if num_layers <= 2 and thin_layer_index == 0: # Target is first layer of <=2 layers
-             ep_after_merge = current_ep[2:] # Remove first 2 -> empty or 1 layer left
-             merged_info = f"Removal of first 2 layers (structure size <= 2)."
-             structure_changed = True
-        elif num_layers <= 1 and thin_layer_index == 0: # Target is first layer of 1 layer stack
-             ep_after_merge = np.array([]) # Remove the only layer
-             merged_info = f"Removal of the only layer."
-             structure_changed = True
-        elif num_layers <= 2 and thin_layer_index == 1: # Target is second layer of 2 layer stack
-             ep_after_merge = current_ep[:-1] # Remove only the last layer
-             merged_info = f"Removal of last layer (structure size 2)."
-             structure_changed = True
-
-        # Standard cases for num_layers > 2
-        elif thin_layer_index == 0: # Thinnest is the first layer
-            # Remove first two layers (H and L)
+        if num_layers <= 2 and thin_layer_index == 0: 
+            ep_after_merge = current_ep[2:] 
+            merged_info = f"Removal of first 2 layers (structure size <= 2)."
+            structure_changed = True
+        elif num_layers <= 1 and thin_layer_index == 0: 
+            ep_after_merge = np.array([]) 
+            merged_info = f"Removal of the only layer."
+            structure_changed = True
+        elif num_layers <= 2 and thin_layer_index == 1: 
+            ep_after_merge = current_ep[:-1] 
+            merged_info = f"Removal of last layer (structure size 2)."
+            structure_changed = True
+        elif thin_layer_index == 0: 
             ep_after_merge = current_ep[2:]
             merged_info = f"Removal of first 2 layers."
             structure_changed = True
-
-        elif thin_layer_index == num_layers - 1: # Thinnest is the last layer
-            # *** MODIFIED LOGIC: Remove ONLY the last layer ***
-            if num_layers >= 1: # Check if there's at least one layer
-                ep_after_merge = current_ep[:-1] # Keep all layers except the last one
+        elif thin_layer_index == num_layers - 1: 
+            if num_layers >= 1: 
+                ep_after_merge = current_ep[:-1] 
                 merged_info = f"Removal of ONLY the last layer (Layer {num_layers})."
                 structure_changed = True
-            else: # Should not happen due to earlier checks
-                 logs.append(f"{log_prefix}Special case: cannot remove last layer (num_layers={num_layers}).")
-                 return current_ep, False, logs
-
-        else: # Thinnest is a middle layer
-            # Merge adjacent layers (which are of the same material type)
+            else: 
+                logs.append(f"{log_prefix}Special case: cannot remove last layer (num_layers={num_layers}).")
+                return current_ep, False, logs
+        else: 
             merged_thickness = current_ep[thin_layer_index - 1] + current_ep[thin_layer_index + 1]
-            # Concatenate parts before, the merged layer, and parts after
             ep_before = current_ep[:thin_layer_index - 1]
             ep_after = current_ep[thin_layer_index + 2:]
             ep_after_merge = np.concatenate((ep_before, [merged_thickness], ep_after))
             merged_info = f"Merging layers {thin_layer_index} and {thin_layer_index + 2} around removed layer {thin_layer_index + 1} -> new thickness {merged_thickness:.3f} nm."
             structure_changed = True
 
-        # --- Return Result ---
         if structure_changed and ep_after_merge is not None:
             logs.append(f"{log_prefix}{merged_info} New structure: {len(ep_after_merge)} layers.")
-            # Ensure final thicknesses meet minimum requirement
             ep_after_merge = np.maximum(ep_after_merge, min_thickness_phys)
             return ep_after_merge, True, logs
-        elif structure_changed and ep_after_merge is None: # Should not happen if logic is correct
+        elif structure_changed and ep_after_merge is None: 
             logs.append(f"{log_prefix}Logic error: structure_changed=True but ep_after_merge=None.")
             return current_ep, False, logs
-        else: # No change was made
+        else: 
             logs.append(f"{log_prefix}No structure modification performed.")
             return current_ep, False, logs
 
     except Exception as e_merge:
         logs.append(f"{log_prefix}ERROR during merge/removal logic: {e_merge}\n{traceback.format_exc(limit=1)}")
         st.error(f"Internal error during layer removal/merge: {e_merge}")
-        return current_ep, False, logs # Return original state on error
+        return current_ep, False, logs 
 
 def _perform_needle_insertion_scan(ep_vector_in: np.ndarray,
                                    nH_material: MaterialInputType, nL_material: MaterialInputType, nSub_material: MaterialInputType,
@@ -937,12 +896,12 @@ def _perform_needle_insertion_scan(ep_vector_in: np.ndarray,
                 t_part2 = layer_end_z - z
                 if t_part1 >= min_thickness_phys and t_part2 >= min_thickness_phys:
                     current_layer_idx = i
-                else: # Split point too close to edge, would create too thin layer
-                    current_layer_idx = -2 # Mark as invalid split
+                else: 
+                    current_layer_idx = -2 
                 break
             layer_start_z = layer_end_z
 
-        if current_layer_idx < 0: # Invalid split point or outside layers
+        if current_layer_idx < 0: 
             continue
 
         tested_insertions += 1
@@ -1057,7 +1016,7 @@ def _run_needle_iterations(ep_start: np.ndarray, num_needles: int,
             best_mse_overall = final_cost_reopt
         else:
             logs.append(f"{log_prefix}  New MSE ({final_cost_reopt:.6e}) not significantly better than previous ({best_mse_overall:.6e}). Stopping needle iterations.")
-            best_ep_overall = ep_after_reopt.copy()
+            best_ep_overall = ep_after_reopt.copy() 
             best_mse_overall = final_cost_reopt
             break
 
@@ -1166,14 +1125,14 @@ def run_auto_mode(initial_ep: Optional[np.ndarray],
                 cycle_improved_globally = True
             else:
                 log_callback(f"    No global improvement by needle phase (vs {best_mse_so_far:.6e}).")
-                best_ep_so_far = ep_after_needles.copy() # Still update to the result of needle phase
+                best_ep_so_far = ep_after_needles.copy() 
                 best_mse_so_far = mse_after_needles
 
 
             log_callback(f"  [Cycle {cycle_num+1}] Thinning Phase (< {threshold_for_thin_removal:.3f} nm) + Re-Opt...")
             st.write(f"Cycle {cycle_num + 1}: Thinning Phase...")
             layers_removed_this_cycle = 0;
-            max_thinning_attempts = len(best_ep_so_far) + 2 # Max attempts to avoid infinite loops if logic is flawed
+            max_thinning_attempts = len(best_ep_so_far) + 2 
             for attempt in range(max_thinning_attempts):
                 current_num_layers_thin = len(best_ep_so_far)
                 if current_num_layers_thin <= 2:
@@ -1208,16 +1167,16 @@ def run_auto_mode(initial_ep: Optional[np.ndarray],
                             best_mse_so_far = mse_after_thin_reopt
                     else:
                         log_callback(f"    WARNING: Re-optimization after thinning FAILED ({thin_reopt_msg}). Stopping thinning for this cycle.")
-                        best_ep_so_far = ep_after_single_removal.copy() # Keep the thinned structure
+                        best_ep_so_far = ep_after_single_removal.copy() 
                         try:
-                            current_mse_jax = cost_fn_penalized_jit(jnp.asarray(best_ep_so_far), *static_args) # Recalculate MSE for this state
+                            current_mse_jax = cost_fn_penalized_jit(jnp.asarray(best_ep_so_far), *static_args) 
                             best_mse_so_far = float(np.array(current_mse_jax))
                             if not np.isfinite(best_mse_so_far): best_mse_so_far = np.inf
                             log_callback(f"      MSE after failed re-opt (reduced structure, not opt): {best_mse_so_far:.6e}")
                         except Exception as e_cost_fail:
                             log_callback(f"      ERROR recalculating MSE after failed re-opt: {e_cost_fail}"); best_mse_so_far = np.inf
                         break
-                else: # No structure change from _perform_layer_merge_or_removal_only
+                else: 
                     log_callback("    No further layers to remove/merge in this phase.")
                     break
             log_callback(f"  [Cycle {cycle_num+1}] End Thinning Phase. {layers_removed_this_cycle} layer(s) removed.")
@@ -1227,7 +1186,7 @@ def run_auto_mode(initial_ep: Optional[np.ndarray],
             if not cycle_improved_globally and best_mse_so_far >= mse_at_cycle_start - MSE_IMPROVEMENT_TOLERANCE :
                 log_callback(f"No significant improvement in Cycle {cycle_num + 1} (Start: {mse_at_cycle_start:.6e}, End: {best_mse_so_far:.6e}). Stopping Auto Mode.")
                 termination_reason = f"No improvement (Cycle {cycle_num + 1})"
-                if best_mse_so_far > mse_at_cycle_start + MSE_IMPROVEMENT_TOLERANCE : # If MSE actually got worse
+                if best_mse_so_far > mse_at_cycle_start + MSE_IMPROVEMENT_TOLERANCE : 
                     log_callback("  MSE increased, reverting to state before this cycle.")
                     best_ep_so_far = ep_at_cycle_start.copy()
                     best_mse_so_far = mse_at_cycle_start
@@ -1252,7 +1211,7 @@ def run_auto_mode(initial_ep: Optional[np.ndarray],
 def calculate_M_for_thickness(thickness: jnp.ndarray, n_complex_layer: jnp.ndarray, l_val: jnp.ndarray) -> jnp.ndarray:
     eta = n_complex_layer
     safe_l_val = jnp.maximum(l_val, 1e-9)
-    safe_eta = jnp.where(jnp.abs(eta) < 1e-12, 1e-12 + 0j, eta) # Avoid division by zero if eta is close to zero
+    safe_eta = jnp.where(jnp.abs(eta) < 1e-12, 1e-12 + 0j, eta) 
     phi = (2 * jnp.pi / safe_l_val) * (n_complex_layer * thickness)
     cos_phi = jnp.cos(phi)
     sin_phi = jnp.sin(phi)
@@ -1272,15 +1231,15 @@ def get_layer_matrices_qwot(layer_idx: int, initial_layer_number: int, l0: float
                               l_vec: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
     predicate_is_H = (layer_idx % 2 == 0)
     n_real_l0 = jax.lax.select(predicate_is_H, nH_c_l0.real, nL_c_l0.real)
-    n_complex_for_matrix = jax.lax.select(predicate_is_H, nH_c_l0, nL_c_l0) # Use complex index for matrix calc
+    n_complex_for_matrix = jax.lax.select(predicate_is_H, nH_c_l0, nL_c_l0) 
 
-    denom = 4.0 * jnp.maximum(n_real_l0, 1e-9) # Use real part for QWOT thickness
+    denom = 4.0 * jnp.maximum(n_real_l0, 1e-9) 
     safe_l0 = jnp.maximum(l0, 1e-9)
 
     ep1_calc = 1.0 * safe_l0 / denom
     ep2_calc = 2.0 * safe_l0 / denom
 
-    ep1 = jnp.where(n_real_l0 > 1e-9, ep1_calc, 0.0) # if n_real_l0 is zero, thickness is zero
+    ep1 = jnp.where(n_real_l0 > 1e-9, ep1_calc, 0.0) 
     ep2 = jnp.where(n_real_l0 > 1e-9, ep2_calc, 0.0)
 
     M_1qwot_batch = calculate_M_batch_for_thickness(ep1, n_complex_for_matrix, l_vec)
@@ -1288,29 +1247,29 @@ def get_layer_matrices_qwot(layer_idx: int, initial_layer_number: int, l0: float
     return M_1qwot_batch, M_2qwot_batch
 
 @jax.jit
-def compute_half_product(multiplier_indices: jnp.ndarray, # (N_half_layers) bool array (0 for 1xQWOT, 1 for 2xQWOT)
-                         layer_matrices_half: jnp.ndarray # (N_half_layers, 2_multipliers, L_lambdas, 2, 2)
-                         ) -> jnp.ndarray: # (L_lambdas, 2, 2)
-    N_half = layer_matrices_half.shape[0] # Number of layers in this half
-    L = layer_matrices_half.shape[2] # Number of lambdas
+def compute_half_product(multiplier_indices: jnp.ndarray, 
+                           layer_matrices_half: jnp.ndarray 
+                           ) -> jnp.ndarray: 
+    N_half = layer_matrices_half.shape[0] 
+    L = layer_matrices_half.shape[2] 
 
-    init_prod = jnp.tile(jnp.eye(2, dtype=jnp.complex128), (L, 1, 1)) # (L, 2, 2)
+    init_prod = jnp.tile(jnp.eye(2, dtype=jnp.complex128), (L, 1, 1)) 
 
     def multiply_step(carry_prod: jnp.ndarray, layer_idx: int) -> Tuple[jnp.ndarray, None]:
-        multiplier_idx = multiplier_indices[layer_idx] # 0 or 1
-        M_k = layer_matrices_half[layer_idx, multiplier_idx, :, :, :] # (L, 2, 2)
-        new_prod = vmap(jnp.matmul)(M_k, carry_prod) # (L, 2, 2)
+        multiplier_idx = multiplier_indices[layer_idx] 
+        M_k = layer_matrices_half[layer_idx, multiplier_idx, :, :, :] 
+        new_prod = vmap(jnp.matmul)(M_k, carry_prod) 
         return new_prod, None
 
     final_prod, _ = jax.lax.scan(multiply_step, init_prod, jnp.arange(N_half))
     return final_prod
 
 @jax.jit
-def get_T_from_batch_matrix(M_batch: jnp.ndarray, # (L_lambdas, 2, 2) or (N_comb, L_lambdas, 2, 2)
-                              nSub_arr: jnp.ndarray # (L_lambdas)
-                              ) -> jnp.ndarray: # (L_lambdas) or (N_comb, L_lambdas)
+def get_T_from_batch_matrix(M_batch: jnp.ndarray, 
+                              nSub_arr: jnp.ndarray
+                              ) -> jnp.ndarray: 
     etainc = 1.0 + 0j
-    etasub_batch = nSub_arr # Will broadcast if M_batch has N_comb dimension
+    etasub_batch = nSub_arr 
 
     m00 = M_batch[..., 0, 0]; m01 = M_batch[..., 0, 1]
     m10 = M_batch[..., 1, 0]; m11 = M_batch[..., 1, 1]
@@ -1321,30 +1280,30 @@ def get_T_from_batch_matrix(M_batch: jnp.ndarray, # (L_lambdas, 2, 2) or (N_comb
 
     ts = (2.0 * etainc) / safe_den
     real_etasub_batch = jnp.real(etasub_batch)
-    safe_real_etainc = 1.0 # jnp.real(etainc)
+    safe_real_etainc = 1.0 
     Ts_complex = (real_etasub_batch / safe_real_etainc) * (ts * jnp.conj(ts))
     Ts = jnp.real(Ts_complex)
-    return jnp.where(rs_den_abs < 1e-12, 0.0, jnp.nan_to_num(Ts, nan=0.0)) # Return 0 for singular matrix result
+    return jnp.where(rs_den_abs < 1e-12, 0.0, jnp.nan_to_num(Ts, nan=0.0)) 
 
 @jax.jit
-def calculate_mse_basic_jax(Ts: jnp.ndarray, # (L_lambdas) or (N_comb, L_lambdas)
-                            l_vec: jnp.ndarray, # (L_lambdas)
-                            targets_tuple: Tuple[Tuple[float, float, float, float], ...]
-                            ) -> jnp.ndarray: # scalar or (N_comb)
+def calculate_mse_basic_jax(Ts: jnp.ndarray, 
+                              l_vec: jnp.ndarray, 
+                              targets_tuple: Tuple[Tuple[float, float, float, float], ...]
+                              ) -> jnp.ndarray: 
     total_squared_error = 0.0
     total_points_in_targets = 0
 
     for i in range(len(targets_tuple)):
         l_min, l_max, t_min, t_max = targets_tuple[i]
-        target_mask = (l_vec >= l_min) & (l_vec <= l_max) # (L_lambdas)
+        target_mask = (l_vec >= l_min) & (l_vec <= l_max) 
 
         slope = jnp.where(jnp.abs(l_max - l_min) < 1e-9, 0.0, (t_max - t_min) / (l_max - l_min))
-        interpolated_target_t = t_min + slope * (l_vec - l_min) # (L_lambdas)
+        interpolated_target_t = t_min + slope * (l_vec - l_min) 
 
-        squared_errors = (Ts - interpolated_target_t)**2 # (L_lambdas) or (N_comb, L_lambdas)
+        squared_errors = (Ts - interpolated_target_t)**2 
         masked_sq_error = jnp.where(target_mask, squared_errors, 0.0)
 
-        total_squared_error += jnp.sum(masked_sq_error, axis=-1) # sum over L_lambdas
+        total_squared_error += jnp.sum(masked_sq_error, axis=-1) 
         total_points_in_targets += jnp.sum(target_mask)
 
     mse = jnp.where(total_points_in_targets > 0,
@@ -1353,19 +1312,19 @@ def calculate_mse_basic_jax(Ts: jnp.ndarray, # (L_lambdas) or (N_comb, L_lambdas
     return jnp.nan_to_num(mse, nan=jnp.inf, posinf=jnp.inf)
 
 @jax.jit
-def combine_and_calc_mse(prod1: jnp.ndarray, prod2: jnp.ndarray, # both (L, 2, 2)
-                         nSub_arr_in: jnp.ndarray, # (L)
-                         l_vec_in: jnp.ndarray, targets_tuple_in: Tuple # (L)
-                         ) -> jnp.ndarray: # scalar MSE
-    M_total = vmap(jnp.matmul)(prod2, prod1) # (L, 2, 2)
-    Ts = get_T_from_batch_matrix(M_total, nSub_arr_in) # (L)
-    mse = calculate_mse_basic_jax(Ts, l_vec_in, targets_tuple_in) # scalar
+def combine_and_calc_mse(prod1: jnp.ndarray, prod2: jnp.ndarray, 
+                           nSub_arr_in: jnp.ndarray, 
+                           l_vec_in: jnp.ndarray, targets_tuple_in: Tuple 
+                           ) -> jnp.ndarray: 
+    M_total = vmap(jnp.matmul)(prod2, prod1) 
+    Ts = get_T_from_batch_matrix(M_total, nSub_arr_in) 
+    mse = calculate_mse_basic_jax(Ts, l_vec_in, targets_tuple_in) 
     return mse
 
 def _execute_split_stack_scan(current_l0: float, initial_layer_number: int,
                               nH_c_l0: complex, nL_c_l0: complex,
-                              nSub_arr_scan: jnp.ndarray, # (L_sparse)
-                              l_vec_eval_sparse_jax: jnp.ndarray, # (L_sparse)
+                              nSub_arr_scan: jnp.ndarray, 
+                              l_vec_eval_sparse_jax: jnp.ndarray, 
                               active_targets_tuple: Tuple,
                               log_callback: Callable) -> Tuple[float, Optional[np.ndarray], List[str]]:
     logs = []
@@ -1380,10 +1339,10 @@ def _execute_split_stack_scan(current_l0: float, initial_layer_number: int,
         get_layer_matrices_qwot_jit = jax.jit(get_layer_matrices_qwot)
         for i in range(initial_layer_number):
             m1, m2 = get_layer_matrices_qwot_jit(i, initial_layer_number, current_l0,
-                                                jnp.asarray(nH_c_l0), jnp.asarray(nL_c_l0),
-                                                l_vec_eval_sparse_jax)
-            layer_matrices_list.append(jnp.stack([m1, m2], axis=0)) # (2_multipliers, L_sparse, 2, 2)
-        all_layer_matrices = jnp.stack(layer_matrices_list, axis=0) # (N_layers, 2_multipliers, L_sparse, 2, 2)
+                                                  jnp.asarray(nH_c_l0), jnp.asarray(nL_c_l0),
+                                                  l_vec_eval_sparse_jax)
+            layer_matrices_list.append(jnp.stack([m1, m2], axis=0)) 
+        all_layer_matrices = jnp.stack(layer_matrices_list, axis=0) 
         all_layer_matrices.block_until_ready()
         log_callback(f"    Pre-calculation of matrices (l0={current_l0:.2f}) finished in {time.time() - precompute_start_time:.3f}s.")
     except Exception as e_mat:
@@ -1402,10 +1361,10 @@ def _execute_split_stack_scan(current_l0: float, initial_layer_number: int,
     half1_start_time = time.time()
     indices1 = jnp.arange(num_comb1)
     powers1 = 2**jnp.arange(N1)
-    multiplier_indices1 = jnp.not_equal(indices1[:, None] & powers1, 0).astype(jnp.int32) # (num_comb1, N1)
-    matrices_half1 = all_layer_matrices[:N1] # (N1, 2, L, 2, 2)
+    multiplier_indices1 = jnp.not_equal(indices1[:, None] & powers1, 0).astype(jnp.int32) 
+    matrices_half1 = all_layer_matrices[:N1] 
     compute_half_product_jit = jax.jit(compute_half_product)
-    partial_products1 = vmap(compute_half_product_jit, in_axes=(0, None))(multiplier_indices1, matrices_half1) # (num_comb1, L, 2, 2)
+    partial_products1 = vmap(compute_half_product_jit, in_axes=(0, None))(multiplier_indices1, matrices_half1) 
     partial_products1.block_until_ready()
     log_callback(f"    Partial products 1 finished in {time.time() - half1_start_time:.3f}s.")
 
@@ -1414,9 +1373,9 @@ def _execute_split_stack_scan(current_l0: float, initial_layer_number: int,
     half2_start_time = time.time()
     indices2 = jnp.arange(num_comb2)
     powers2 = 2**jnp.arange(N2)
-    multiplier_indices2 = jnp.not_equal(indices2[:, None] & powers2, 0).astype(jnp.int32) # (num_comb2, N2)
-    matrices_half2 = all_layer_matrices[N1:] # (N2, 2, L, 2, 2)
-    partial_products2 = vmap(compute_half_product_jit, in_axes=(0, None))(multiplier_indices2, matrices_half2) # (num_comb2, L, 2, 2)
+    multiplier_indices2 = jnp.not_equal(indices2[:, None] & powers2, 0).astype(jnp.int32) 
+    matrices_half2 = all_layer_matrices[N1:] 
+    partial_products2 = vmap(compute_half_product_jit, in_axes=(0, None))(multiplier_indices2, matrices_half2) 
     partial_products2.block_until_ready()
     log_callback(f"    Partial products 2 finished in {time.time() - half2_start_time:.3f}s.")
 
@@ -1425,10 +1384,10 @@ def _execute_split_stack_scan(current_l0: float, initial_layer_number: int,
     combine_start_time = time.time()
     combine_and_calc_mse_jit = jax.jit(combine_and_calc_mse)
 
-    vmap_inner = vmap(combine_and_calc_mse_jit, in_axes=(None, 0, None, None, None)) # vmap over partial_products2
-    vmap_outer = vmap(vmap_inner, in_axes=(0, None, None, None, None))   # vmap over partial_products1
+    vmap_inner = vmap(combine_and_calc_mse_jit, in_axes=(None, 0, None, None, None)) 
+    vmap_outer = vmap(vmap_inner, in_axes=(0, None, None, None, None))   
 
-    all_mses_nested = vmap_outer(partial_products1, partial_products2, nSub_arr_scan, l_vec_eval_sparse_jax, active_targets_tuple) # (num_comb1, num_comb2)
+    all_mses_nested = vmap_outer(partial_products1, partial_products2, nSub_arr_scan, l_vec_eval_sparse_jax, active_targets_tuple) 
     all_mses_nested.block_until_ready()
     log_callback(f"    Combination and MSE finished in {time.time() - combine_start_time:.3f}s.")
 
@@ -1442,19 +1401,15 @@ def _execute_split_stack_scan(current_l0: float, initial_layer_number: int,
 
     best_idx_half1, best_idx_half2 = jnp.unravel_index(best_idx_flat, (num_comb1, num_comb2))
 
-    best_indices_h1 = multiplier_indices1[best_idx_half1] # (N1,)
-    best_indices_h2 = multiplier_indices2[best_idx_half2] # (N2,)
+    best_indices_h1 = multiplier_indices1[best_idx_half1] 
+    best_indices_h2 = multiplier_indices2[best_idx_half2] 
 
-    best_multipliers_h1 = 1.0 + best_indices_h1.astype(jnp.float64) # 1.0 or 2.0
+    best_multipliers_h1 = 1.0 + best_indices_h1.astype(jnp.float64) 
     best_multipliers_h2 = 1.0 + best_indices_h2.astype(jnp.float64)
 
-    current_best_multipliers = jnp.concatenate([best_multipliers_h1, best_multipliers_h2]) # (N,)
+    current_best_multipliers = jnp.concatenate([best_multipliers_h1, best_multipliers_h2]) 
     logs.append(f"    Best MSE for scan l0={current_l0:.2f}: {current_best_mse:.6e}")
     return current_best_mse, np.array(current_best_multipliers), logs
-
-def add_log(message: Union[str, List[str]]):
-    # This function is now a no-op as logs are removed
-    pass
 
 def get_material_input(role: str) -> Tuple[Optional[MaterialInputType], str]:
     if role == 'H':
@@ -1477,11 +1432,9 @@ def get_material_input(role: str) -> Tuple[Optional[MaterialInputType], str]:
         valid_n = True
         valid_k = True
         if n_real <= 0:
-            # add_log(f"WARNING: Constant n' for {role} <= 0 ({n_real:.3f}), using 1.0.")
             n_real = 1.0
             valid_n = False
         if n_imag < 0:
-            # add_log(f"WARNING: Constant k for {role} < 0 ({n_imag:.3f}), using 0.0.")
             n_imag = 0.0
             valid_k = False
 
@@ -1493,7 +1446,6 @@ def get_material_input(role: str) -> Tuple[Optional[MaterialInputType], str]:
         return selection, selection
     else:
         st.error(f"Material selection for '{role}' invalid or missing in session_state.")
-        # add_log(f"Critical error: Material selection '{role}' invalid: {selection}")
         return None, "Selection Error"
 
 def validate_targets() -> Optional[List[Dict]]:
@@ -1528,14 +1480,11 @@ def validate_targets() -> Optional[List[Dict]]:
                 is_valid = False; continue
 
     if not is_valid:
-        # add_log(["Errors detected in active target definitions:"] + logs)
         st.warning("Errors exist in the active spectral target definitions. Please correct.")
         return None
     elif not active_targets:
-        # add_log("No spectral targets are enabled.")
         return []
     else:
-        # add_log(f"{len(active_targets)} active and valid target(s) found.")
         return active_targets
 
 def get_lambda_range_from_targets(validated_targets: Optional[List[Dict]]) -> Tuple[Optional[float], Optional[float]]:
@@ -1548,7 +1497,6 @@ def get_lambda_range_from_targets(validated_targets: Optional[List[Dict]]) -> Tu
     return overall_min, overall_max
 
 def clear_optimized_state():
-    # add_log("Clearing optimized state and history.")
     st.session_state.optimized_ep = None
     st.session_state.is_optimized_state = False
     st.session_state.ep_history = deque(maxlen=5)
@@ -1556,10 +1504,8 @@ def clear_optimized_state():
     st.session_state.last_mse = None
 
 def set_optimized_as_nominal_wrapper():
-    # add_log("Attempting to set Optimized as Nominal...")
     if not st.session_state.get('is_optimized_state') or st.session_state.get('optimized_ep') is None:
         st.error("No valid optimized structure to set as nominal.")
-        # add_log("Error: No optimized structure to set as nominal.")
         return
 
     try:
@@ -1568,52 +1514,42 @@ def set_optimized_as_nominal_wrapper():
         nL_mat, _ = get_material_input('L')
         if nH_mat is None or nL_mat is None:
             st.error("Cannot retrieve H/L materials to recalculate QWOT.")
-            # add_log("Error: Invalid H/L materials for QWOT recalculation.")
             return
 
         optimized_qwots, logs_qwot = calculate_qwot_from_ep(st.session_state.optimized_ep, l0, nH_mat, nL_mat, EXCEL_FILE_PATH)
-        # add_log(logs_qwot)
         if optimized_qwots is None:
             st.error("Error recalculating QWOT from the optimized structure.")
-            # add_log("Error: QWOT recalculation failed (returned None).")
             return
 
         if np.any(np.isnan(optimized_qwots)):
             st.warning("Recalculated QWOT contains NaNs (likely invalid index at l0). Nominal QWOT not updated.")
-            # add_log("Warning: Recalculated QWOT contains NaN. Nominal not updated.")
         else:
             new_qwot_str = ",".join([f"{q:.6f}" for q in optimized_qwots])
             st.session_state.current_qwot = new_qwot_str
-            # add_log(f"Nominal QWOT updated: {new_qwot_str}")
             st.success("Optimized structure set as new Nominal (QWOT updated).")
             clear_optimized_state()
     except Exception as e:
         st.error(f"Unexpected error setting optimized as nominal: {e}")
-        # add_log(f"Unexpected error (set_optimized_as_nominal): {e}\n{traceback.format_exc(limit=1)}")
 
 def undo_remove_wrapper():
-    # add_log("Attempting to undo last removal...")
     if not st.session_state.get('ep_history'):
         st.info("Undo history is empty.")
-        # add_log("History empty, cannot undo.")
         return
 
     try:
         last_ep = st.session_state.ep_history.pop()
         st.session_state.optimized_ep = last_ep.copy()
         st.session_state.is_optimized_state = True
-        # add_log(f"State restored ({len(last_ep)} layers). {len(st.session_state.ep_history)} states remaining in history.")
 
         l0 = st.session_state.l0
         nH_mat, _ = get_material_input('H')
         nL_mat, _ = get_material_input('L')
         if nH_mat is not None and nL_mat is not None:
             qwots_recalc, logs_qwot = calculate_qwot_from_ep(last_ep, l0, nH_mat, nL_mat, EXCEL_FILE_PATH)
-            # add_log(logs_qwot)
             if qwots_recalc is not None and not np.any(np.isnan(qwots_recalc)):
                 st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_recalc])
             else:
-                 st.session_state.optimized_qwot_str = "QWOT N/A (after undo)"
+                st.session_state.optimized_qwot_str = "QWOT N/A (after undo)"
         else:
             st.session_state.optimized_qwot_str = "QWOT Material Error (after undo)"
 
@@ -1626,15 +1562,12 @@ def undo_remove_wrapper():
             }
     except IndexError:
         st.warning("Undo history is empty (internal error?).")
-        # add_log("Error: Attempted pop on empty history.")
     except Exception as e:
         st.error(f"Unexpected error during undo: {e}")
-        # add_log(f"Unexpected error (undo_remove): {e}\n{traceback.format_exc(limit=1)}")
         clear_optimized_state()
 
 def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force_ep: Optional[np.ndarray] = None):
     calc_type = 'Optimized' if is_optimized_run else 'Nominal'
-    # add_log(f"\n{'='*10} Starting {calc_type} Calculation {'('+method_name+')' if method_name else ''} {'='*10}")
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
 
@@ -1643,7 +1576,6 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             active_targets = validate_targets()
             if active_targets is None:
                 st.error("Target definition invalid. Check logs and correct.")
-                # add_log("Calculation aborted: Invalid targets.")
                 return
             if not active_targets:
                 st.warning("No active targets. Default lambda range used (400-700nm). MSE calculation will be N/A.")
@@ -1652,7 +1584,6 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 l_min_plot, l_max_plot = get_lambda_range_from_targets(active_targets)
                 if l_min_plot is None or l_max_plot is None or l_max_plot < l_min_plot:
                     st.error("Could not determine a valid lambda range from targets.")
-                    # add_log("Calculation aborted: Invalid lambda range from targets.")
                     return
 
             validated_inputs = {
@@ -1668,36 +1599,27 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             nSub_mat, nSub_repr = get_material_input('Sub')
             if nH_mat is None or nL_mat is None or nSub_mat is None:
                 st.error("Material definition error. Check selections and/or Excel files.")
-                # add_log("Calculation aborted: Material error.")
                 return
             validated_inputs['nH_material'] = nH_mat
             validated_inputs['nL_material'] = nL_mat
             validated_inputs['nSub_material'] = nSub_mat
-            # add_log(f"Materials used: H={nH_repr}, L={nL_repr}, Sub={nSub_repr}")
 
             ep_to_calculate = None
             if force_ep is not None:
                 ep_to_calculate = force_ep.copy()
-                # add_log("Using forced ep vector.")
             elif is_optimized_run and st.session_state.get('optimized_ep') is not None:
                 ep_to_calculate = st.session_state.optimized_ep.copy()
-                # add_log("Using current optimized structure.")
             else:
-                # add_log("Using nominal structure (QWOT).")
                 emp_list = [float(e.strip()) for e in validated_inputs['emp_str'].split(',') if e.strip()]
                 if not emp_list and calc_type == 'Nominal':
-                    # add_log("Nominal QWOT empty, calculating for bare substrate.")
                     ep_to_calculate = np.array([], dtype=np.float64)
                 elif not emp_list and calc_type == 'Optimized':
-                     st.error("Cannot start an optimized calculation if nominal QWOT is empty and no previous optimized state exists.")
-                     # add_log("Error: Optimized calculation requested but initial state is empty.")
-                     return
+                    st.error("Cannot start an optimized calculation if nominal QWOT is empty and no previous optimized state exists.")
+                    return
                 else:
                     ep_calc, logs_ep_init = calculate_initial_ep(emp_list, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-                    # add_log(logs_ep_init)
                     if ep_calc is None:
                         st.error("Failed to calculate initial thicknesses from QWOT.")
-                        # add_log("Calculation aborted: failed initial ep calculation.")
                         return
                     ep_to_calculate = ep_calc.copy()
 
@@ -1708,20 +1630,15 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             l_vec_plot_fine_np = l_vec_plot_fine_np[(l_vec_plot_fine_np > 0) & np.isfinite(l_vec_plot_fine_np)]
             if not l_vec_plot_fine_np.size:
                 st.error("Could not generate a valid lambda vector for plotting.")
-                # add_log("Calculation aborted: invalid lambda vector for plot.")
                 return
 
-            # add_log(f"Calculating T(lambda) over {len(l_vec_plot_fine_np)} points for plot [{l_min_plot:.1f}-{l_max_plot:.1f} nm].")
             start_calc_time = time.time()
             results_fine, calc_logs = calculate_T_from_ep_jax(
                 ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_plot_fine_np, EXCEL_FILE_PATH
             )
-            # add_log(calc_logs)
             if results_fine is None:
                 st.error("Main transmittance calculation failed.")
-                # add_log("Critical error: calculate_T_from_ep_jax returned None.")
                 return
-            # add_log(f"T(lambda) calculation finished in {time.time() - start_calc_time:.3f}s.")
 
             st.session_state.last_calc_results = {
                 'res_fine': results_fine,
@@ -1736,25 +1653,19 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 l_vec_optim_np = np.geomspace(l_min_plot, l_max_plot, num_pts_optim)
                 l_vec_optim_np = l_vec_optim_np[(l_vec_optim_np > 0) & np.isfinite(l_vec_optim_np)]
                 if l_vec_optim_np.size > 0:
-                    # add_log(f"Calculating T(lambda) over {len(l_vec_optim_np)} points for MSE display...")
                     results_optim_grid, logs_mse_calc = calculate_T_from_ep_jax(
                         ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_optim_np, EXCEL_FILE_PATH
                     )
-                    # add_log(logs_mse_calc)
                     if results_optim_grid is not None:
                         mse_display, num_pts_mse = calculate_final_mse(results_optim_grid, active_targets)
                         st.session_state.last_mse = mse_display
-                        # add_log(f"MSE calculated for display: {mse_display:.4e} (over {num_pts_mse} points)" if mse_display is not None else "MSE N/A (no valid points in targets)")
                         st.session_state.last_calc_results['res_optim_grid'] = results_optim_grid
                     else:
-                        # add_log("Failed T calculation on optim grid for MSE.")
                         st.session_state.last_mse = None
                 else:
-                    # add_log("Optimization grid empty, MSE not calculated.")
                     st.session_state.last_mse = None
             else:
-                 # add_log("No active targets, MSE not calculated.")
-                 st.session_state.last_mse = None
+                st.session_state.last_mse = None
 
             st.session_state.is_optimized_state = is_optimized_run
             if not is_optimized_run:
@@ -1762,17 +1673,13 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 st.session_state.current_ep = ep_to_calculate.copy() if ep_to_calculate is not None else None
 
             st.success(f"{calc_type} calculation finished.")
-            # add_log(f"--- End {calc_type} Calculation ---")
 
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during {calc_type} calculation: {e}")
-            # add_log(f"ERROR ({calc_type} Calculation): {e}\n{traceback.format_exc(limit=1)}")
         except Exception as e_fatal:
-             st.error(f"Unexpected error during {calc_type} calculation: {e_fatal}")
-             # add_log(f"FATAL ERROR ({calc_type} Calculation): {e_fatal}\n{traceback.format_exc()}")
+            st.error(f"Unexpected error during {calc_type} calculation: {e_fatal}")
 
 def run_local_optimization_wrapper():
-    # add_log(f"\n{'='*10} Starting Local Optimization {'='*10}")
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
     clear_optimized_state()
@@ -1782,14 +1689,12 @@ def run_local_optimization_wrapper():
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
                 st.error("Local optimization requires active and valid targets.")
-                # add_log("Local optimization aborted: invalid or missing targets.")
                 return
 
             l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
             if l_min_opt is None:
-                 st.error("Could not determine lambda range for optimization.")
-                 # add_log("Local optimization aborted: invalid lambda range.")
-                 return
+                st.error("Could not determine lambda range for optimization.")
+                return
 
             validated_inputs = {
                 'l0': st.session_state.l0, 'l_step': st.session_state.l_step,
@@ -1802,31 +1707,24 @@ def run_local_optimization_wrapper():
             nSub_mat, nSub_repr = get_material_input('Sub')
             if nH_mat is None or nL_mat is None or nSub_mat is None:
                 st.error("Material definition error for optimization.")
-                # add_log("Local optimization aborted: material error.")
                 return
             validated_inputs['nH_material'] = nH_mat
             validated_inputs['nL_material'] = nL_mat
             validated_inputs['nSub_material'] = nSub_mat
-            # add_log(f"Opt Materials: H={nH_repr}, L={nL_repr}, Sub={nSub_repr}")
 
             emp_list = [float(e.strip()) for e in validated_inputs['emp_str'].split(',') if e.strip()]
             if not emp_list:
                 st.error("Nominal QWOT empty, cannot start local optimization.")
-                # add_log("Local optimization aborted: Nominal QWOT empty.")
                 return
 
             ep_start, logs_ep_init = calculate_initial_ep(emp_list, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-            # add_log(logs_ep_init)
             if ep_start is None:
                 st.error("Failed initial thickness calculation for local optimization.")
-                # add_log("Local optimization aborted: failed initial ep calculation.")
                 return
 
-            # add_log(f"Starting local optimization from {len(ep_start)} nominal layers.")
             final_ep, success, final_cost, optim_logs, msg = \
                 _run_core_optimization(ep_start, validated_inputs, active_targets,
                                        MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ")
-            # add_log(optim_logs)
 
             if success and final_ep is not None:
                 st.session_state.optimized_ep = final_ep.copy()
@@ -1834,18 +1732,15 @@ def run_local_optimization_wrapper():
                 st.session_state.is_optimized_state = True
                 st.session_state.last_mse = final_cost
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-                # add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else:
                     st.session_state.optimized_qwot_str = "QWOT N/A"
                 st.success(f"Local optimization finished ({msg}). MSE: {final_cost:.4e}")
-                # add_log(f"--- End Local Optimization (Success) ---")
                 st.session_state.needs_rerun_calc = True
                 st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Opt Local"}
             else:
                 st.error(f"Local optimization failed: {msg}")
-                # add_log(f"--- End Local Optimization (Failure) ---")
                 st.session_state.is_optimized_state = False
                 st.session_state.optimized_ep = None
                 st.session_state.current_ep = ep_start.copy()
@@ -1853,15 +1748,12 @@ def run_local_optimization_wrapper():
 
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during local optimization: {e}")
-            # add_log(f"ERROR (Local Opt): {e}\n{traceback.format_exc(limit=1)}")
             clear_optimized_state()
         except Exception as e_fatal:
-             st.error(f"Unexpected error during local optimization: {e_fatal}")
-             # add_log(f"FATAL ERROR (Local Opt): {e_fatal}\n{traceback.format_exc()}")
-             clear_optimized_state()
+            st.error(f"Unexpected error during local optimization: {e_fatal}")
+            clear_optimized_state()
 
 def run_scan_optimization_wrapper():
-    # add_log(f"\n{'#'*10} Starting QWOT Scan + Optimization {'#'*10}")
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
     clear_optimized_state()
@@ -1872,20 +1764,17 @@ def run_scan_optimization_wrapper():
                 st.session_state.initial_layer_number = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
                 if st.session_state.initial_layer_number == 0:
                     st.error("Nominal QWOT is empty and initial layer number is not defined.")
-                    # add_log("Error Scan+Opt: Initial layer number not defined.")
                     return
 
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
                 st.error("QWOT Scan+Opt requires active and valid targets.")
-                # add_log("QWOT Scan+Opt aborted: invalid or missing targets.")
                 return
 
             l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
             if l_min_opt is None:
-                 st.error("Could not determine lambda range for QWOT Scan+Opt.")
-                 # add_log("QWOT Scan+Opt aborted: invalid lambda range.")
-                 return
+                st.error("Could not determine lambda range for QWOT Scan+Opt.")
+                return
 
             validated_inputs = {
                 'l0': st.session_state.l0, 'l_step': st.session_state.l_step,
@@ -1899,52 +1788,44 @@ def run_scan_optimization_wrapper():
             nSub_mat, nSub_repr = get_material_input('Sub')
             if nH_mat is None or nL_mat is None or nSub_mat is None:
                 st.error("Material definition error for QWOT Scan+Opt.")
-                # add_log("QWOT Scan+Opt aborted: material error.")
                 return
             validated_inputs['nH_material'] = nH_mat
             validated_inputs['nL_material'] = nL_mat
             validated_inputs['nSub_material'] = nSub_mat
-            # add_log(f"Scan+Opt Materials: H={nH_repr}, L={nL_repr}, Sub={nSub_repr}")
-            # add_log(f"Scanning for N={validated_inputs['initial_layer_number']} layers.")
 
             l_vec_eval_full_np = np.geomspace(l_min_opt, l_max_opt, max(2, int(np.round((l_max_opt - l_min_opt) / validated_inputs['l_step'])) + 1))
             l_vec_eval_full_np = l_vec_eval_full_np[(l_vec_eval_full_np > 0) & np.isfinite(l_vec_eval_full_np)]
             if not l_vec_eval_full_np.size: raise ValueError("Failed lambda generation for Scan.")
 
-            l_vec_eval_sparse_np = l_vec_eval_full_np[::2] # Use a sparser grid for the scan itself
+            l_vec_eval_sparse_np = l_vec_eval_full_np[::2] 
             if not l_vec_eval_sparse_np.size: raise ValueError("Failed sparse lambda generation for Scan.")
             l_vec_eval_sparse_jax = jnp.asarray(l_vec_eval_sparse_np)
-            # add_log(f"Using scan grid with {len(l_vec_eval_sparse_jax)} points.")
 
             nSub_arr_scan, logs_sub_scan = _get_nk_array_for_lambda_vec(nSub_mat, l_vec_eval_sparse_jax, EXCEL_FILE_PATH)
-            # add_log(logs_sub_scan)
             if nSub_arr_scan is None: raise RuntimeError("Failed substrate index preparation for scan.")
 
             active_targets_tuple = tuple((t['min'], t['max'], t['target_min'], t['target_max']) for t in active_targets)
 
             l0_nominal = validated_inputs['l0']
-            l0_values_to_test = sorted(list(set([l0_nominal, l0_nominal * 1.2, l0_nominal * 0.8]))) # Test nominal and +/- 20%
+            l0_values_to_test = sorted(list(set([l0_nominal, l0_nominal * 1.2, l0_nominal * 0.8]))) 
             l0_values_to_test = [l for l in l0_values_to_test if l > 1e-6]
-            # add_log(f"QWOT Scan will test l0 = {[f'{l:.1f}' for l in l0_values_to_test]} nm.")
 
             initial_candidates = []
             overall_scan_logs = []
             for l0_scan in l0_values_to_test:
-                # add_log(f"--- QWOT Scan for l0 = {l0_scan:.2f} ---")
                 st.write(f"Scanning for l0={l0_scan:.1f}...")
                 try:
                     nH_c_l0, log_h_l0 = _get_nk_at_lambda(nH_mat, l0_scan, EXCEL_FILE_PATH)
                     nL_c_l0, log_l_l0 = _get_nk_at_lambda(nL_mat, l0_scan, EXCEL_FILE_PATH)
                     overall_scan_logs.extend(log_h_l0); overall_scan_logs.extend(log_l_l0)
                     if nH_c_l0 is None or nL_c_l0 is None:
-                        # add_log(f"WARNING: H/L indices not found for l0={l0_scan:.2f}. Scan for this l0 skipped.")
                         continue
 
                     scan_mse, scan_multipliers, scan_logs = _execute_split_stack_scan(
                         l0_scan, validated_inputs['initial_layer_number'],
                         nH_c_l0, nL_c_l0,
                         nSub_arr_scan, l_vec_eval_sparse_jax, active_targets_tuple,
-                        add_log # Pass log function
+                        add_log 
                     )
                     overall_scan_logs.extend(scan_logs)
                     if scan_multipliers is not None and np.isfinite(scan_mse):
@@ -1953,73 +1834,55 @@ def run_scan_optimization_wrapper():
                             'mse_scan': scan_mse,
                             'multipliers': scan_multipliers
                         })
-                        # add_log(f"Candidate found for l0={l0_scan:.2f} with MSE (scan)={scan_mse:.4e}")
                     else:
-                         # add_log(f"No valid candidate found for l0={l0_scan:.2f}")
-                         pass
+                        pass
                 except Exception as e_scan_l0:
-                    # add_log(f"Error during scan for l0={l0_scan:.2f}: {e_scan_l0}")
                     st.warning(f"Error during scan for l0={l0_scan:.2f}: {e_scan_l0}")
-
-            # add_log(overall_scan_logs) # Add all logs from scans
 
             if not initial_candidates:
                 st.error("QWOT Scan found no valid initial candidates.")
-                # add_log("Critical error: QWOT Scan empty.")
                 return
 
-            # add_log(f"\n--- QWOT Scan finished. Found {len(initial_candidates)} candidate(s). Running Local Optimization for each. ---")
             st.write("Local optimization of best scan candidate...")
             initial_candidates.sort(key=lambda c: c['mse_scan'])
             best_candidate = initial_candidates[0]
-            # add_log(f"\nBest scan candidate: l0={best_candidate['l0']:.2f}, MSE(scan)={best_candidate['mse_scan']:.4e}")
-            # add_log("Starting local optimization for this candidate...")
 
             ep_start_optim, logs_ep_best = calculate_initial_ep(best_candidate['multipliers'], best_candidate['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-            # add_log(logs_ep_best)
             if ep_start_optim is None:
                 st.error("Failed thickness calculation for best scan candidate.")
-                # add_log("Critical error: ep_start_optim is None for best candidate.")
                 return
 
             final_ep, success, final_cost, optim_logs, msg = \
                 _run_core_optimization(ep_start_optim, validated_inputs, active_targets,
                                        MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Scan Cand] ")
-            # add_log(optim_logs)
 
             if success and final_ep is not None:
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
                 st.session_state.is_optimized_state = True
                 st.session_state.last_mse = final_cost
-                st.session_state.l0 = best_candidate['l0'] # Update l0 to the one that gave the best result
+                st.session_state.l0 = best_candidate['l0'] 
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, best_candidate['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-                # add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else: st.session_state.optimized_qwot_str = "QWOT N/A"
                 st.success(f"QWOT Scan + Optimization finished ({msg}). Final MSE: {final_cost:.4e}")
-                # add_log(f"--- End QWOT Scan + Optimization (Success) ---")
                 st.session_state.needs_rerun_calc = True
                 st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Scan+Opt (l0={best_candidate['l0']:.1f})"}
             else:
                 st.error(f"Local optimization after scan failed: {msg}")
-                # add_log(f"--- End QWOT Scan + Optimization (Final Opt Failure) ---")
                 clear_optimized_state()
 
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during QWOT Scan + Optimization: {e}")
-            # add_log(f"ERROR (Scan+Opt): {e}\n{traceback.format_exc(limit=1)}")
             clear_optimized_state()
         except Exception as e_fatal:
-             st.error(f"Unexpected error during QWOT Scan + Optimization: {e_fatal}")
-             # add_log(f"FATAL ERROR (Scan+Opt): {e_fatal}\n{traceback.format_exc()}")
-             clear_optimized_state()
+            st.error(f"Unexpected error during QWOT Scan + Optimization: {e_fatal}")
+            clear_optimized_state()
         finally:
-            pass # Cleanup if needed
+            pass 
 
 def run_auto_mode_wrapper():
-    # add_log(f"\n{'#'*10} Starting Auto Mode {'#'*10}")
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
 
@@ -2028,14 +1891,12 @@ def run_auto_mode_wrapper():
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
                 st.error("Auto Mode requires active and valid targets.")
-                # add_log("Auto Mode aborted: invalid or missing targets.")
                 return
 
             l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
             if l_min_opt is None:
-                 st.error("Could not determine lambda range for Auto Mode.")
-                 # add_log("Auto Mode aborted: invalid lambda range.")
-                 return
+                st.error("Could not determine lambda range for Auto Mode.")
+                return
 
             validated_inputs = {
                 'l0': st.session_state.l0, 'l_step': st.session_state.l_step,
@@ -2048,17 +1909,14 @@ def run_auto_mode_wrapper():
             nSub_mat, nSub_repr = get_material_input('Sub')
             if nH_mat is None or nL_mat is None or nSub_mat is None:
                 st.error("Material definition error for Auto Mode.")
-                # add_log("Auto Mode aborted: material error.")
                 return
             validated_inputs['nH_material'] = nH_mat
             validated_inputs['nL_material'] = nL_mat
             validated_inputs['nSub_material'] = nSub_mat
-            # add_log(f"Auto Materials: H={nH_repr}, L={nL_repr}, Sub={nSub_repr}")
 
             ep_start_auto = None
             if st.session_state.get('is_optimized_state') and st.session_state.get('optimized_ep') is not None:
                 ep_start_auto = st.session_state.optimized_ep.copy()
-                # add_log("Auto Mode starting from previous optimized state.")
 
             final_ep, final_mse, auto_logs = run_auto_mode(
                 initial_ep=ep_start_auto,
@@ -2067,7 +1925,6 @@ def run_auto_mode_wrapper():
                 excel_file_path=EXCEL_FILE_PATH,
                 log_callback=add_log
             )
-            # add_log(auto_logs)
 
             if final_ep is not None and np.isfinite(final_mse):
                 st.session_state.optimized_ep = final_ep.copy()
@@ -2075,68 +1932,57 @@ def run_auto_mode_wrapper():
                 st.session_state.is_optimized_state = True
                 st.session_state.last_mse = final_mse
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-                # add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else: st.session_state.optimized_qwot_str = "QWOT N/A"
                 st.success(f"Auto Mode finished. Final MSE: {final_mse:.4e}")
-                # add_log(f"--- End Auto Mode (Success) ---")
                 st.session_state.needs_rerun_calc = True
                 st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Auto Mode"}
             else:
                 st.error("Automatic Mode failed or did not produce a valid result.")
-                # add_log(f"--- End Auto Mode (Failure) ---")
                 clear_optimized_state()
                 st.session_state.needs_rerun_calc = True
                 st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (After Auto Fail)"}
 
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during Auto Mode: {e}")
-            # add_log(f"ERROR (Auto Mode): {e}\n{traceback.format_exc(limit=1)}")
         except Exception as e_fatal:
-             st.error(f"Unexpected error during Auto Mode: {e_fatal}")
-             # add_log(f"FATAL ERROR (Auto Mode): {e_fatal}\n{traceback.format_exc()}")
+            st.error(f"Unexpected error during Auto Mode: {e_fatal}")
         finally:
             pass
 
 def run_remove_thin_wrapper():
-    # add_log(f"\n{'-'*10} Attempting Thin Layer Removal + Re-Optimization {'-'*10}")
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
 
     if not st.session_state.get('is_optimized_state') or st.session_state.get('optimized_ep') is None:
         st.error("This action requires an existing optimized structure. Run an optimization first.")
-        # add_log("Error 'Remove Thin': No optimized state.")
         return
 
     current_ep_optim = st.session_state.optimized_ep.copy()
     if len(current_ep_optim) <= 2:
         st.error("Structure too small (<= 2 layers) for removal/merge.")
-        # add_log("Error 'Remove Thin': Structure too small.")
         return
 
     with st.spinner("Removing thin layer + Re-optimizing..."):
         try:
             st.session_state.ep_history.append(current_ep_optim)
-            # add_log(f"  [Undo] State saved ({len(current_ep_optim)} layers). Hist: {len(st.session_state.ep_history)}")
 
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
-                st.session_state.ep_history.pop() # Remove the state we just added
+                st.session_state.ep_history.pop() 
                 st.error("Removal aborted: invalid or missing targets for re-optimization.")
-                # add_log("Error 'Remove Thin': invalid targets.")
                 return
 
             l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
             if l_min_opt is None:
                 st.session_state.ep_history.pop()
                 st.error("Removal aborted: invalid lambda range for re-optimization.")
-                # add_log("Error 'Remove Thin': invalid lambda range.")
                 return
 
             validated_inputs = {
                 'l0': st.session_state.l0, 'l_step': st.session_state.l_step,
-                'emp_str': st.session_state.current_qwot, # Needed for material loading in re-opt
+                'emp_str': st.session_state.current_qwot, 
                 'auto_thin_threshold': st.session_state.auto_thin_threshold,
                 'l_range_deb': l_min_opt, 'l_range_fin': l_max_opt,
             }
@@ -2146,28 +1992,23 @@ def run_remove_thin_wrapper():
             if nH_mat is None or nL_mat is None or nSub_mat is None:
                 st.session_state.ep_history.pop()
                 st.error("Removal aborted: material definition error.")
-                # add_log("Error 'Remove Thin': material error.")
                 return
             validated_inputs['nH_material'] = nH_mat
             validated_inputs['nL_material'] = nL_mat
             validated_inputs['nSub_material'] = nSub_mat
 
             threshold = validated_inputs['auto_thin_threshold']
-            # add_log(f"Searching for thinnest layer >= {MIN_THICKNESS_PHYS_NM:.3f} nm...")
             ep_after_removal, structure_changed, removal_logs = _perform_layer_merge_or_removal_only(
                 current_ep_optim, MIN_THICKNESS_PHYS_NM,
                 log_prefix="  [Remove] ",
-                threshold_for_removal=None # Find thinnest overall, not below a threshold
+                threshold_for_removal=None 
             )
-            # add_log(removal_logs)
 
             if structure_changed and ep_after_removal is not None:
-                # add_log(f"Structure modified ({len(ep_after_removal)} layers). Re-optimizing...")
                 st.write("Re-optimizing after removal...")
                 final_ep, success, final_cost, optim_logs, msg = \
                     _run_core_optimization(ep_after_removal, validated_inputs, active_targets,
                                            MIN_THICKNESS_PHYS_NM, log_prefix="  [ReOpt Thin] ")
-                # add_log(optim_logs)
 
                 if success and final_ep is not None:
                     st.session_state.optimized_ep = final_ep.copy()
@@ -2175,21 +2016,18 @@ def run_remove_thin_wrapper():
                     st.session_state.is_optimized_state = True
                     st.session_state.last_mse = final_cost
                     qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
-                    # add_log(logs_qwot)
                     if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                         st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                     else: st.session_state.optimized_qwot_str = "QWOT N/A"
                     st.success(f"Removal + Re-optimization finished ({msg}). Final MSE: {final_cost:.4e}")
-                    # add_log(f"--- End Removal+Re-Opt (Success) ---")
                     st.session_state.needs_rerun_calc = True
                     st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Optimized (Post-Remove)"}
                 else:
                     st.warning(f"Layer removed, but re-optimization failed ({msg}). State is AFTER removal but BEFORE failed re-opt attempt.")
-                    # add_log("WARNING: Re-optimization after removal failed.")
-                    st.session_state.optimized_ep = ep_after_removal.copy() # Keep the state after removal
+                    st.session_state.optimized_ep = ep_after_removal.copy() 
                     st.session_state.current_ep = ep_after_removal.copy()
-                    st.session_state.is_optimized_state = True # Still consider it 'optimized' just not re-optimized
-                    try: # Try to calculate MSE for this intermediate state
+                    st.session_state.is_optimized_state = True 
+                    try: 
                         l_min_opt, l_max_opt = validated_inputs['l_range_deb'], validated_inputs['l_range_fin']
                         l_step_optim = validated_inputs['l_step']
                         num_pts_optim = max(2, int(np.round((l_max_opt - l_min_opt) / l_step_optim)) + 1)
@@ -2200,54 +2038,45 @@ def run_remove_thin_wrapper():
                             if results_fail_grid:
                                 mse_fail, _ = calculate_final_mse(results_fail_grid, active_targets)
                                 st.session_state.last_mse = mse_fail
-                                # add_log(f"MSE (after removal, before failed re-opt): {mse_fail:.4e}" if mse_fail is not None else "MSE N/A")
-                        else: st.session_state.last_mse = None
+                            else: st.session_state.last_mse = None
                         qwots_fail, _ = calculate_qwot_from_ep(ep_after_removal, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
                         if qwots_fail is not None and not np.any(np.isnan(qwots_fail)):
                             st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_fail])
                         else: st.session_state.optimized_qwot_str = "QWOT N/A (ReOpt Fail)"
                     except Exception as e_recalc:
-                        # add_log(f"Error recalculating QWOT/MSE after failed re-opt: {e_recalc}")
                         st.session_state.last_mse = None
                         st.session_state.optimized_qwot_str = "Recalc Error"
-                    # add_log(f"--- End Removal+Re-Opt (Re-Opt Failure) ---")
                     st.session_state.needs_rerun_calc = True
                     st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': "Optimized (Post-Remove, Re-Opt Fail)"}
             else:
                 st.info("No layer was removed (criteria not met).")
-                # add_log("Structure not modified by removal attempt.")
                 try:
-                    st.session_state.ep_history.pop() # Remove the saved state as it wasn't needed
-                    # add_log("  [Undo] Unnecessary history state removed.")
-                except IndexError: pass # Should not happen, but safe
+                    st.session_state.ep_history.pop() 
+                except IndexError: pass 
 
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during Thin Layer Removal: {e}")
-            # add_log(f"ERROR (Remove Thin): {e}\n{traceback.format_exc(limit=1)}")
         except Exception as e_fatal:
-             st.error(f"Unexpected error during Thin Layer Removal: {e_fatal}")
-             # add_log(f"FATAL ERROR (Remove Thin): {e_fatal}\n{traceback.format_exc()}")
+            st.error(f"Unexpected error during Thin Layer Removal: {e_fatal}")
         finally:
-            pass # Cleanup if needed
+            pass 
 
-# --- Streamlit UI ---
 st.set_page_config(layout="wide", page_title="Thin Film Optimizer (Streamlit)")
 st.title("🔬 Thin Film Optimizer (Streamlit + JAX)")
 st.markdown("""*Streamlit conversion of the Tkinter tool. Focuses on H/L calculations.*""")
 
-# Initialize session state if not already done
 if 'init_done' not in st.session_state:
     st.session_state.log_messages = ["[Initialization] Welcome to the Streamlit optimizer."]
-    st.session_state.current_ep = None # Holds nominal ep if calculated, or optimized ep if is_optimized_state is True
-    st.session_state.current_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" # Default QWOT
-    st.session_state.optimized_ep = None # Holds the result of the last successful optimization/modification
-    st.session_state.is_optimized_state = False # Flag to indicate if the current state is nominal or optimized
-    st.session_state.optimized_qwot_str = "" # QWOT string corresponding to optimized_ep
-    st.session_state.material_sequence = None # For arbitrary sequences (not used in H/L mode)
-    st.session_state.ep_history = deque(maxlen=5) # For undo functionality
-    st.session_state.last_mse = None # Stores the last calculated MSE for display
-    st.session_state.needs_rerun_calc = False # Flag to trigger automatic recalculation
-    st.session_state.rerun_calc_params = {} # Parameters for the triggered recalculation
+    st.session_state.current_ep = None 
+    st.session_state.current_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" 
+    st.session_state.optimized_ep = None 
+    st.session_state.is_optimized_state = False 
+    st.session_state.optimized_qwot_str = "" 
+    st.session_state.material_sequence = None 
+    st.session_state.ep_history = deque(maxlen=5) 
+    st.session_state.last_mse = None 
+    st.session_state.needs_rerun_calc = False 
+    st.session_state.rerun_calc_params = {} 
 
     try:
         mats, logs = get_available_materials_from_excel(EXCEL_FILE_PATH)
@@ -2255,25 +2084,19 @@ if 'init_done' not in st.session_state:
         st.session_state.available_materials = sorted(list(set(["Constant"] + mats)))
         base_subs = ["Constant", "Fused Silica", "BK7", "D263"]
         st.session_state.available_substrates = sorted(list(set(base_subs + st.session_state.available_materials)))
-        # add_log(f"H/L materials loaded: {st.session_state.available_materials}")
-        # add_log(f"Substrates loaded: {st.session_state.available_substrates}")
     except Exception as e:
         st.error(f"Initial error loading materials from {EXCEL_FILE_PATH}: {e}")
-        # add_log(f"CRITICAL ERROR: Initial material loading failed: {e}")
         st.session_state.available_materials = ["Constant"]
         st.session_state.available_substrates = ["Constant"]
 
-    # Default values
     st.session_state.l0 = 500.0
     st.session_state.l_step = 10.0
     st.session_state.auto_thin_threshold = 1.0
 
-    # Default material selections (try specific names first, fallback to Constant)
     st.session_state.selected_H = next((m for m in ["Nb2O5-Helios", "Constant"] if m in st.session_state.available_materials), "Constant")
     st.session_state.selected_L = next((m for m in ["SiO2-Helios", "Constant"] if m in st.session_state.available_materials), "Constant")
     st.session_state.selected_Sub = next((m for m in ["Fused Silica", "Constant"] if m in st.session_state.available_substrates), "Constant")
 
-    # Default targets
     st.session_state.targets = [
         {'enabled': True, 'min': 400.0, 'max': 500.0, 'target_min': 1.0, 'target_max': 1.0},
         {'enabled': True, 'min': 500.0, 'max': 600.0, 'target_min': 1.0, 'target_max': 0.2},
@@ -2282,7 +2105,6 @@ if 'init_done' not in st.session_state:
         {'enabled': False, 'min': 800.0, 'max': 900.0, 'target_min': 0.0, 'target_max': 0.0},
     ]
 
-    # Default constant refractive indices (used only if "Constant" is selected)
     st.session_state.nH_r = 2.35
     st.session_state.nH_i = 0.0
     st.session_state.nL_r = 1.46
@@ -2290,25 +2112,21 @@ if 'init_done' not in st.session_state:
     st.session_state.nSub_r = 1.52
 
     st.session_state.init_done = True
-    # add_log("Session state initialized.")
-    st.session_state.needs_rerun_calc = True # Trigger initial calculation on load
+    st.session_state.needs_rerun_calc = True 
     st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Initial Load"}
 
-# Callback to trigger recalculation when parameters change
 def trigger_nominal_recalc():
-    if not st.session_state.get('calculating', False): # Avoid triggering during calculation
+    if not st.session_state.get('calculating', False): 
         print("INFO: trigger_nominal_recalc called")
         st.session_state.needs_rerun_calc = True
         st.session_state.rerun_calc_params = {
-            'is_optimized_run': False, # Always recalculate nominal when params change
+            'is_optimized_run': False, 
             'method_name': "Nominal (Param Update)",
-            'force_ep': None # Don't force ep, recalculate from QWOT
+            'force_ep': None 
         }
 
-# --- Define Layout ---
-col_config, col_results = st.columns([1, 3]) # Left column wider for config
+col_config, col_results = st.columns([1, 3]) 
 
-# --- Left Column (Configuration & Nominal Structure) ---
 with col_config:
     st.header("⚙️ Configuration")
     st.subheader("Materials")
@@ -2344,22 +2162,18 @@ with col_config:
         st.session_state.nSub_r = st.number_input("n' Substrate", value=st.session_state.nSub_r, format="%.4f", key="nSub_const", on_change=trigger_nominal_recalc)
 
     if st.button("🔄 Reload Excel Materials", key="reload_mats"):
-        st.cache_data.clear() # Clear cache for material loading
+        st.cache_data.clear() 
         try:
             mats, logs = get_available_materials_from_excel(EXCEL_FILE_PATH)
-            # add_log(logs)
             st.session_state.available_materials = sorted(list(set(["Constant"] + mats)))
             base_subs = ["Constant", "Fused Silica", "BK7", "D263"]
             st.session_state.available_substrates = sorted(list(set(base_subs + st.session_state.available_materials)))
-            # add_log("Material list reloaded.")
-            # Reset selections if they are no longer available
             if st.session_state.selected_H not in st.session_state.available_materials: st.session_state.selected_H = "Constant"
             if st.session_state.selected_L not in st.session_state.available_materials: st.session_state.selected_L = "Constant"
             if st.session_state.selected_Sub not in st.session_state.available_substrates: st.session_state.selected_Sub = "Constant"
-            st.rerun() # Rerun to update selectbox options
+            st.rerun() 
         except Exception as e:
             st.error(f"Error reloading materials: {e}")
-            # add_log(f"Error reloading materials: {e}")
 
     st.divider()
     st.subheader("Nominal Structure")
@@ -2367,7 +2181,7 @@ with col_config:
         "Nominal QWOT (multipliers separated by ',')",
         value=st.session_state.current_qwot,
         key="qwot_input",
-        on_change=clear_optimized_state # Changing nominal QWOT clears optimized state
+        on_change=clear_optimized_state 
     )
     num_layers_from_qwot = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
     st.caption(f"Layers from QWOT: {num_layers_from_qwot}")
@@ -2389,7 +2203,7 @@ with col_config:
                         'method_name': "Nominal (Generated 1s)"
                     }
                     st.rerun()
-            elif st.session_state.current_qwot != "": # If num layers is 0, clear QWOT
+            elif st.session_state.current_qwot != "": 
                 st.session_state.current_qwot = ""
                 clear_optimized_state()
                 st.session_state.needs_rerun_calc = True
@@ -2399,7 +2213,6 @@ with col_config:
                 }
                 st.rerun()
 
-# --- Right Column (Results, Targets, Actions) ---
 with col_results:
     st.header("📈 Results")
     state_desc = "Optimized" if st.session_state.is_optimized_state else "Nominal"
@@ -2412,16 +2225,16 @@ with col_results:
         if st.session_state.last_mse is not None and np.isfinite(st.session_state.last_mse):
             st.metric("MSE", f"{st.session_state.last_mse:.4e}")
         else:
-             st.metric("MSE", "N/A")
+            st.metric("MSE", "N/A")
     with res_cols[1]:
         min_thick_str = "N/A"
         if ep_display is not None and ep_display.size > 0:
-            valid_thick = ep_display[ep_display >= MIN_THICKNESS_PHYS_NM - 1e-9] # Allow for floating point slightly below
+            valid_thick = ep_display[ep_display >= MIN_THICKNESS_PHYS_NM - 1e-9] 
             if valid_thick.size > 0:
                 min_thick_str = f"{np.min(valid_thick):.3f} nm"
         st.metric("Min Thick.", min_thick_str)
     with res_cols[2]:
-         if st.session_state.is_optimized_state and st.session_state.get('optimized_qwot_str'):
+        if st.session_state.is_optimized_state and st.session_state.get('optimized_qwot_str'):
             st.text_input("Opt. QWOT", value=st.session_state.optimized_qwot_str, disabled=True, key="opt_qwot_display_main")
 
 
@@ -2429,10 +2242,10 @@ with col_results:
     if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
         results_data = st.session_state.last_calc_results
         res_fine_plot = results_data.get('res_fine')
-        active_targets_plot = validate_targets() # Get current valid targets for plotting
+        active_targets_plot = validate_targets() 
         mse_plot = st.session_state.last_mse
         method_name_plot = results_data.get('method_name', '')
-        res_optim_grid_plot = results_data.get('res_optim_grid') # Get data used for MSE calc
+        res_optim_grid_plot = results_data.get('res_optim_grid') 
 
         if res_fine_plot and active_targets_plot is not None:
             fig_spec, ax_spec = plt.subplots(figsize=(12, 5))
@@ -2449,7 +2262,7 @@ with col_results:
                     line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
 
                     plotted_target_label = False
-                    if active_targets_plot: # Check if list is not empty
+                    if active_targets_plot: 
                         for i, target in enumerate(active_targets_plot):
                             l_min, l_max = target['min'], target['max']
                             t_min, t_max_corr = target['target_min'], target['target_max']
@@ -2459,7 +2272,6 @@ with col_results:
                             marker_target = ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', label='_nolegend_', zorder=6)
                             plotted_target_label = True
 
-                            # Plot points used for MSE calculation within this target zone
                             if res_optim_grid_plot and 'l' in res_optim_grid_plot and res_optim_grid_plot['l'].size > 0:
                                 res_l_optim = np.asarray(res_optim_grid_plot['l'])
                                 indices_optim = np.where((res_l_optim >= l_min) & (res_l_optim <= l_max))[0]
@@ -2469,28 +2281,24 @@ with col_results:
                                     else: slope = (t_max_corr - t_min) / (l_max - l_min); optim_target_t = t_min + slope * (optim_lambdas - l_min)
                                     ax_spec.plot(optim_lambdas, optim_target_t, marker='.', color='darkred', linestyle='none', markersize=4, alpha=0.5, label='_nolegend_', zorder=6)
 
-                    ax_spec.set_xlabel("Wavelength (nm)")
-                    ax_spec.set_ylabel('Transmittance')
-                    ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
-                    ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
-                    ax_spec.minorticks_on()
-                    if len(res_l_plot) > 0: ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
-                    ax_spec.set_ylim(-0.05, 1.05)
-                    if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
+                ax_spec.set_xlabel("Wavelength (nm)")
+                ax_spec.set_ylabel('Transmittance')
+                ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
+                ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
+                ax_spec.minorticks_on()
+                if len(res_l_plot) > 0: ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
+                ax_spec.set_ylim(-0.05, 1.05)
+                if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
 
-                    if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
-                    else: mse_text = "MSE: N/A"
-                    ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
-                                 bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
-                else:
-                    ax_spec.text(0.5, 0.5, "No spectral data", ha='center', va='center', transform=ax_spec.transAxes)
-            except Exception as e_spec:
-                ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
-                # add_log(f"Error plotting spectrum: {e_spec}")
-
-            plt.tight_layout(rect=[0, 0, 1, 0.95]) # Adjust layout to prevent title overlap
+                if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
+                else: mse_text = "MSE: N/A"
+                ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
+                             bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
+            else:
+                ax_spec.text(0.5, 0.5, "No spectral data", ha='center', va='center', transform=ax_spec.transAxes)
+            plt.tight_layout(rect=[0, 0, 1, 0.95]) 
             st.pyplot(fig_spec)
-            plt.close(fig_spec) # Close the figure to free memory
+            plt.close(fig_spec) 
         else:
             st.warning("Missing or invalid calculation data for spectrum display.")
     else:
@@ -2508,7 +2316,7 @@ with col_results:
         nL_plot = results_data.get('nL_used')
         nSub_plot = results_data.get('nSub_used')
         is_optimized_plot = st.session_state.is_optimized_state
-        material_sequence_plot = st.session_state.get('material_sequence') # Check if arbitrary sequence was used
+        material_sequence_plot = st.session_state.get('material_sequence') 
 
         if ep_plot is not None and l0_plot is not None and nH_plot is not None and nL_plot is not None and nSub_plot is not None:
             with plot_col1:
@@ -2517,7 +2325,6 @@ with col_results:
                     nH_c_repr, logs_h = _get_nk_at_lambda(nH_plot, l0_plot, EXCEL_FILE_PATH)
                     nL_c_repr, logs_l = _get_nk_at_lambda(nL_plot, l0_plot, EXCEL_FILE_PATH)
                     nSub_c_repr, logs_s = _get_nk_at_lambda(nSub_plot, l0_plot, EXCEL_FILE_PATH)
-                    # add_log(logs_h); add_log(logs_l); add_log(logs_s) # Log index lookups
 
                     if nH_c_repr is None or nL_c_repr is None or nSub_c_repr is None:
                         raise ValueError("Indices at l0 not found for profile plot.")
@@ -2526,8 +2333,7 @@ with col_results:
                     num_layers = len(ep_plot)
 
                     if material_sequence_plot:
-                        # add_log("WARNING: Profile plot for arbitrary sequence not fully implemented (using H/L assumption).")
-                        n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)] # Fallback/placeholder
+                        n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)] 
                     else:
                         n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
 
@@ -2535,11 +2341,10 @@ with col_results:
                     total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
                     margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
 
-                    # Build coordinates for step plot
-                    x_coords_plot = [-margin] # Start in substrate
+                    x_coords_plot = [-margin] 
                     y_coords_plot = [nSub_r_repr]
                     if num_layers > 0:
-                        x_coords_plot.append(0) # Interface Substrate/L1
+                        x_coords_plot.append(0) 
                         y_coords_plot.append(nSub_r_repr)
                         for i in range(num_layers):
                             layer_start = ep_cumulative[i-1] if i > 0 else 0
@@ -2548,11 +2353,11 @@ with col_results:
                             x_coords_plot.extend([layer_start, layer_end])
                             y_coords_plot.extend([layer_n_real, layer_n_real])
                         last_layer_end = ep_cumulative[-1]
-                        x_coords_plot.extend([last_layer_end, last_layer_end + margin]) # Interface LN/Air and into Air
-                        y_coords_plot.extend([1.0, 1.0]) # Air index
-                    else: # Bare substrate case
-                        x_coords_plot.extend([0, 0, margin]) # Interface Sub/Air and into Air
-                        y_coords_plot.extend([nSub_r_repr, 1.0, 1.0]) # Air index
+                        x_coords_plot.extend([last_layer_end, last_layer_end + margin]) 
+                        y_coords_plot.extend([1.0, 1.0]) 
+                    else: 
+                        x_coords_plot.extend([0, 0, margin]) 
+                        y_coords_plot.extend([nSub_r_repr, 1.0, 1.0]) 
 
                     ax_idx.plot(x_coords_plot, y_coords_plot, drawstyle='steps-post', label=f'n\'(λ={l0_plot:.0f}nm)', color='purple', linewidth=1.5)
                     ax_idx.set_xlabel('Depth (from substrate) (nm)')
@@ -2563,7 +2368,6 @@ with col_results:
                     ax_idx.minorticks_on()
                     ax_idx.set_xlim(x_coords_plot[0], x_coords_plot[-1])
 
-                    # Adjust y-limits based on actual indices
                     valid_n = [n for n in [1.0, nSub_r_repr] + n_real_layers_repr if np.isfinite(n)]
                     min_n = min(valid_n) if valid_n else 0.9
                     max_n = max(valid_n) if valid_n else 2.5
@@ -2573,7 +2377,6 @@ with col_results:
                     if ax_idx.get_legend_handles_labels()[1]: ax_idx.legend(fontsize=8)
                 except Exception as e_idx:
                     ax_idx.text(0.5, 0.5, f"Error plotting index profile:\n{e_idx}", ha='center', va='center', transform=ax_idx.transAxes, color='red')
-                    # add_log(f"Error plotting index profile: {e_idx}")
                 plt.tight_layout()
                 st.pyplot(fig_idx)
                 plt.close(fig_idx)
@@ -2585,11 +2388,10 @@ with col_results:
                     if num_layers > 0:
                         indices_complex_repr = []
                         if material_sequence_plot:
-                            # add_log("WARNING: Structure plot for arbitrary sequence not fully implemented (using H/L assumption).")
-                            nH_c_repr, _ = _get_nk_at_lambda(nH_plot, l0_plot, EXCEL_FILE_PATH) # Need H/L for fallback
+                            nH_c_repr, _ = _get_nk_at_lambda(nH_plot, l0_plot, EXCEL_FILE_PATH) 
                             nL_c_repr, _ = _get_nk_at_lambda(nL_plot, l0_plot, EXCEL_FILE_PATH)
-                            indices_complex_repr = [nH_c_repr if i % 2 == 0 else nL_c_repr for i in range(num_layers)] # Placeholder
-                            layer_types = [f"Mat{i+1}" for i in range(num_layers)] # Generic labels
+                            indices_complex_repr = [nH_c_repr if i % 2 == 0 else nL_c_repr for i in range(num_layers)] 
+                            layer_types = [f"Mat{i+1}" for i in range(num_layers)] 
                         else:
                             nH_c_repr, _ = _get_nk_at_lambda(nH_plot, l0_plot, EXCEL_FILE_PATH)
                             nL_c_repr, _ = _get_nk_at_lambda(nL_plot, l0_plot, EXCEL_FILE_PATH)
@@ -2611,14 +2413,13 @@ with col_results:
 
                         ax_stack.set_yticks(bar_pos)
                         ax_stack.set_yticklabels(yticks_labels, fontsize=7)
-                        ax_stack.invert_yaxis() # Layer 1 at top
+                        ax_stack.invert_yaxis() 
 
-                        # Add thickness labels on bars
                         max_ep_plot = max(ep_plot) if ep_plot.size > 0 else 1.0
-                        fontsize_bar = max(6, 9 - num_layers // 15) # Adjust font size based on number of layers
+                        fontsize_bar = max(6, 9 - num_layers // 15) 
                         for i, bar in enumerate(bars):
                             width = bar.get_width()
-                            ha_pos = 'left' if width < max_ep_plot * 0.3 else 'right' # Position text inside or outside bar
+                            ha_pos = 'left' if width < max_ep_plot * 0.3 else 'right' 
                             x_text_pos = width * 1.02 if ha_pos == 'left' else width * 0.98
                             text_color = 'black' if ha_pos == 'left' else 'white'
                             ax_stack.text(x_text_pos, bar.get_y() + bar.get_height()/2., f"{width:.2f}",
@@ -2632,17 +2433,16 @@ with col_results:
                     stack_title_prefix = f'Structure {"Optimized" if is_optimized_plot else "Nominal"}'
                     ax_stack.set_title(f"{stack_title_prefix} ({num_layers} layers)")
                     max_ep_plot = max(ep_plot) if num_layers > 0 else 10
-                    ax_stack.set_xlim(right=max_ep_plot * 1.1) # Add padding
+                    ax_stack.set_xlim(right=max_ep_plot * 1.1) 
                 except Exception as e_stack:
                     ax_stack.text(0.5, 0.5, f"Error plotting structure:\n{e_stack}", ha='center', va='center', transform=ax_stack.transAxes, color='red')
-                    # add_log(f"Error plotting structure: {e_stack}")
                 plt.tight_layout()
                 st.pyplot(fig_stack)
                 plt.close(fig_stack)
         else:
-             st.warning("Missing data to display profiles.")
-    else: # No calculation results yet
-        pass # Don't display anything if no results
+            st.warning("Missing data to display profiles.")
+    else: 
+        pass 
 
     st.divider()
     st.subheader("🎯 Spectral Targets (Transmission T)")
@@ -2664,7 +2464,7 @@ with col_results:
         st.session_state.targets[i]['target_max'] = cols[4].number_input("Tmax", value=target.get('target_max', 0.0), min_value=0.0, max_value=1.0, format="%.3f", step=0.01, key=f"target_tmax_{i}", label_visibility="collapsed", on_change=trigger_nominal_recalc)
 
     with st.expander("👁️ Preview Active Targets", expanded=False):
-        active_targets_preview = validate_targets() # Get currently valid targets
+        active_targets_preview = validate_targets() 
         if active_targets_preview is not None:
             def create_target_preview_fig(active_targets_list):
                 fig_prev, ax_prev = plt.subplots(figsize=(5, 3))
@@ -2717,7 +2517,7 @@ with col_results:
         if st.button("🤖 Auto Mode (Needle > Thin > Opt)", key="optim_auto", use_container_width=True):
             run_auto_mode_wrapper()
     with auto_cols[1]:
-         st.session_state.auto_thin_threshold = st.number_input("Threshold (nm)", value=st.session_state.auto_thin_threshold, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_input_action", help="Thickness threshold for automatic thin layer removal in Auto Mode.", label_visibility="collapsed")
+        st.session_state.auto_thin_threshold = st.number_input("Threshold (nm)", value=st.session_state.auto_thin_threshold, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_input_action", help="Thickness threshold for automatic thin layer removal in Auto Mode.", label_visibility="collapsed")
 
     st.divider()
     st.subheader("🛠️ Actions on Optimized")
@@ -2731,27 +2531,25 @@ with col_results:
 
     if st.button("💾 Set Optimized -> Nominal", key="set_optim_as_nom", use_container_width=True, disabled=not can_optimize):
         set_optimized_as_nominal_wrapper()
-        st.rerun() # Rerun to reflect the change in nominal QWOT
+        st.rerun() 
 
     if st.button(f"↩️ Undo Removal ({len(st.session_state.get('ep_history', deque()))})", key="undo_remove", use_container_width=True, disabled=not can_undo):
         undo_remove_wrapper()
-        st.rerun() # Rerun to reflect the undone state
+        st.rerun() 
 
-# --- Automatic Recalculation Trigger ---
 if st.session_state.get('needs_rerun_calc', False):
-    # add_log("Triggering automatic recalculation...")
     params = st.session_state.rerun_calc_params
-    force_ep_val = params.get('force_ep') # Get forced ep if provided
+    force_ep_val = params.get('force_ep') 
 
-    st.session_state.needs_rerun_calc = False # Reset flag
-    st.session_state.rerun_calc_params = {} # Clear params
-    st.session_state.calculating = True # Set calculating flag
+    st.session_state.needs_rerun_calc = False 
+    st.session_state.rerun_calc_params = {} 
+    st.session_state.calculating = True 
 
     run_calculation_wrapper(
         is_optimized_run=params.get('is_optimized_run', False),
         method_name=params.get('method_name', 'Auto Recalc'),
-        force_ep=force_ep_val # Pass forced ep to wrapper
+        force_ep=force_ep_val 
     )
-    st.session_state.calculating = False # Clear calculating flag
-    # add_log("Recalculation finished, triggering UI refresh...")
-    st.rerun() # Rerun Streamlit to update the UI with new results
+    st.session_state.calculating = False 
+    st.rerun() 
+
