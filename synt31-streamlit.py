@@ -1,3 +1,21 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import streamlit as st
 import jax
 import jax.numpy as jnp
@@ -719,14 +737,38 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
     return final_ep, optim_success, final_cost, logs, result_message_str
 
 def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness_phys: float,
-                                           log_prefix: str = "", target_layer_index: Optional[int] = None,
-                                           threshold_for_removal: Optional[float] = None) -> Tuple[Optional[np.ndarray], bool, List[str]]:
+                                         log_prefix: str = "", target_layer_index: Optional[int] = None,
+                                         threshold_for_removal: Optional[float] = None) -> Tuple[Optional[np.ndarray], bool, List[str]]:
+    """
+    Identifies the thinnest layer (optionally below a threshold or a specific target)
+    and performs removal/merging based on its position (first, last, middle).
+
+    - If first: Removes first two layers.
+    - If last: Removes ONLY the last layer. (MODIFIED BEHAVIOR)
+    - If middle: Removes the thin layer and merges its neighbors.
+
+    Args:
+        ep_vector_in: Current thickness vector.
+        min_thickness_phys: Minimum physical thickness allowed.
+        log_prefix: Prefix for log messages.
+        target_layer_index: If specified, attempts to remove/merge around this layer index.
+        threshold_for_removal: If specified (and no target_layer_index), only considers layers thinner than this for automatic removal.
+
+    Returns:
+        Tuple containing:
+            - Modified thickness vector (or original if no change).
+            - Boolean flag indicating if the structure was changed.
+            - List of log messages.
+    """
     current_ep = ep_vector_in.copy()
     logs = []
     num_layers = len(current_ep)
     structure_changed = False
-    ep_after_merge = None
+    ep_after_merge = None # Initialize result vector
 
+    # --- Basic Checks ---
+    # Cannot remove/merge if only 2 layers or less, unless a specific target is given
+    # (Targeting might be intended to remove the whole structure if <=2 layers)
     if num_layers <= 2 and target_layer_index is None:
         logs.append(f"{log_prefix}Structure <= 2 layers. Removal/merge not possible without target.")
         return current_ep, False, logs
@@ -735,9 +777,11 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
         return current_ep, False, logs
 
     try:
-        thin_layer_index = -1
+        # --- Identify Target Layer ---
+        thin_layer_index = -1 # Sentinel value
         min_thickness_found = np.inf
 
+        # 1. Check for manually targeted layer
         if target_layer_index is not None:
             if 0 <= target_layer_index < num_layers and current_ep[target_layer_index] >= min_thickness_phys:
                 thin_layer_index = target_layer_index
@@ -745,9 +789,11 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
                 logs.append(f"{log_prefix}Manual targeting layer {thin_layer_index + 1} ({min_thickness_found:.3f} nm).")
             else:
                 logs.append(f"{log_prefix}Manual target {target_layer_index+1} invalid/too thin. Auto search.")
-                target_layer_index = None
+                target_layer_index = None # Fallback to auto search
 
+        # 2. Auto-search if no valid manual target
         if target_layer_index is None:
+            # Find indices of layers thick enough to be considered
             candidate_indices = np.where(current_ep >= min_thickness_phys)[0]
             if candidate_indices.size == 0:
                 logs.append(f"{log_prefix}No layer >= {min_thickness_phys:.3f} nm found.")
@@ -757,6 +803,7 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
             indices_to_consider = candidate_indices
             thicknesses_to_consider = candidate_thicknesses
 
+            # Apply optional threshold filter
             if threshold_for_removal is not None:
                 mask_below_threshold = thicknesses_to_consider < threshold_for_removal
                 if np.any(mask_below_threshold):
@@ -764,17 +811,21 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
                     thicknesses_to_consider = thicknesses_to_consider[mask_below_threshold]
                     logs.append(f"{log_prefix}Searching among layers < {threshold_for_removal:.3f} nm.")
                 else:
+                    # No layers below threshold found
                     logs.append(f"{log_prefix}No eligible layer (< {threshold_for_removal:.3f} nm) found.")
-                    return current_ep, False, logs
+                    return current_ep, False, logs # No change possible under this criteria
 
+            # Find the thinnest among the remaining candidates
             if indices_to_consider.size > 0:
                 min_idx_local = np.argmin(thicknesses_to_consider)
                 thin_layer_index = indices_to_consider[min_idx_local]
                 min_thickness_found = thicknesses_to_consider[min_idx_local]
             else:
+                # This case should ideally not be reached if threshold logic is correct
                 logs.append(f"{log_prefix}No final candidate layer found.")
                 return current_ep, False, logs
 
+        # --- Perform Action Based on Identified Layer ---
         if thin_layer_index == -1:
             logs.append(f"{log_prefix}Failed to identify layer (unexpected case).")
             return current_ep, False, logs
@@ -782,44 +833,64 @@ def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness
         thin_layer_thickness = current_ep[thin_layer_index]
         logs.append(f"{log_prefix}Layer identified for action: Index {thin_layer_index} (Layer {thin_layer_index + 1}), thickness {thin_layer_thickness:.3f} nm.")
 
-        if num_layers <= 2:
-            logs.append(f"{log_prefix}Logic error: attempt to merge on <= 2 layers.")
-            return current_ep, False, logs
-        elif thin_layer_index == 0:
+        # Check again, as target_layer_index might have been set for <=2 layers
+        if num_layers <= 2 and thin_layer_index == 0: # Target is first layer of <=2 layers
+             ep_after_merge = current_ep[2:] # Remove first 2 -> empty or 1 layer left
+             merged_info = f"Removal of first 2 layers (structure size <= 2)."
+             structure_changed = True
+        elif num_layers <= 1 and thin_layer_index == 0: # Target is first layer of 1 layer stack
+             ep_after_merge = np.array([]) # Remove the only layer
+             merged_info = f"Removal of the only layer."
+             structure_changed = True
+        elif num_layers <= 2 and thin_layer_index == 1: # Target is second layer of 2 layer stack
+             ep_after_merge = current_ep[:-1] # Remove only the last layer
+             merged_info = f"Removal of last layer (structure size 2)."
+             structure_changed = True
+
+        # Standard cases for num_layers > 2
+        elif thin_layer_index == 0: # Thinnest is the first layer
+            # Remove first two layers (H and L)
             ep_after_merge = current_ep[2:]
             merged_info = f"Removal of first 2 layers."
             structure_changed = True
-        elif thin_layer_index == num_layers - 1:
-            if num_layers >= 2:
-                ep_after_merge = current_ep[:-2]
-                merged_info = f"Removal of last 2 layers."
+
+        elif thin_layer_index == num_layers - 1: # Thinnest is the last layer
+            # *** MODIFIED LOGIC: Remove ONLY the last layer ***
+            if num_layers >= 1: # Check if there's at least one layer
+                ep_after_merge = current_ep[:-1] # Keep all layers except the last one
+                merged_info = f"Removal of ONLY the last layer (Layer {num_layers})."
                 structure_changed = True
-            else: # Should be caught by num_layers <= 2 already
-                logs.append(f"{log_prefix}Special case: cannot remove last 2 layers (num_layers={num_layers}).")
-                return current_ep, False, logs
-        else: # Merge adjacent layers
+            else: # Should not happen due to earlier checks
+                 logs.append(f"{log_prefix}Special case: cannot remove last layer (num_layers={num_layers}).")
+                 return current_ep, False, logs
+
+        else: # Thinnest is a middle layer
+            # Merge adjacent layers (which are of the same material type)
             merged_thickness = current_ep[thin_layer_index - 1] + current_ep[thin_layer_index + 1]
+            # Concatenate parts before, the merged layer, and parts after
             ep_before = current_ep[:thin_layer_index - 1]
             ep_after = current_ep[thin_layer_index + 2:]
             ep_after_merge = np.concatenate((ep_before, [merged_thickness], ep_after))
             merged_info = f"Merging layers {thin_layer_index} and {thin_layer_index + 2} around removed layer {thin_layer_index + 1} -> new thickness {merged_thickness:.3f} nm."
             structure_changed = True
 
+        # --- Return Result ---
         if structure_changed and ep_after_merge is not None:
             logs.append(f"{log_prefix}{merged_info} New structure: {len(ep_after_merge)} layers.")
+            # Ensure final thicknesses meet minimum requirement
             ep_after_merge = np.maximum(ep_after_merge, min_thickness_phys)
             return ep_after_merge, True, logs
-        elif structure_changed and ep_after_merge is None: # Should not happen
+        elif structure_changed and ep_after_merge is None: # Should not happen if logic is correct
             logs.append(f"{log_prefix}Logic error: structure_changed=True but ep_after_merge=None.")
             return current_ep, False, logs
-        else: # No change
+        else: # No change was made
             logs.append(f"{log_prefix}No structure modification performed.")
             return current_ep, False, logs
 
     except Exception as e_merge:
         logs.append(f"{log_prefix}ERROR during merge/removal logic: {e_merge}\n{traceback.format_exc(limit=1)}")
         st.error(f"Internal error during layer removal/merge: {e_merge}")
-        return current_ep, False, logs
+        return current_ep, False, logs # Return original state on error
 
 def _perform_needle_insertion_scan(ep_vector_in: np.ndarray,
                                    nH_material: MaterialInputType, nL_material: MaterialInputType, nSub_material: MaterialInputType,
