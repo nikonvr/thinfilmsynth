@@ -2211,21 +2211,39 @@ with main_layout[1]:
                     nH_r_repr, nL_r_repr, nSub_r_repr = nH_c_repr.real, nL_c_repr.real, nSub_c_repr.real
                     num_layers = len(ep_plot)
                     n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
-                    ep_cumulative = np.cumsum(ep_plot) if num_layers > 0 else np.array([0])
-                    total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
+                    
+                    total_thickness = np.sum(ep_plot) if num_layers > 0 else 0
                     margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
-                    x_coords_plot, y_coords_plot = [-margin], [nSub_r_repr]
+                    
+                    x_coords_plot = [-margin, 0]
+                    y_coords_plot = [nSub_r_repr, nSub_r_repr]
+
                     if num_layers > 0:
-                        x_coords_plot.extend([0, 0]); y_coords_plot.extend([nSub_r_repr, n_real_layers_repr[0]])
-                        for i in range(num_layers - 1):
-                            x_coords_plot.extend([ep_cumulative[i], ep_cumulative[i]]); y_coords_plot.extend([n_real_layers_repr[i], n_real_layers_repr[i+1]])
-                        x_coords_plot.extend([ep_cumulative[-1], ep_cumulative[-1] + margin]); y_coords_plot.extend([n_real_layers_repr[-1], 1.0])
-                    else:
-                        x_coords_plot.extend([0, 0, margin]); y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
+                        current_z = 0
+                        for i in range(num_layers):
+                            layer_n_real = n_real_layers_repr[i]
+                            x_coords_plot.append(current_z)
+                            y_coords_plot.append(layer_n_real)
+                            current_z += ep_plot[i]
+                            x_coords_plot.append(current_z)
+                            y_coords_plot.append(layer_n_real)
+                        
+                        x_coords_plot.append(current_z)
+                        y_coords_plot.append(1.0)
+                        x_coords_plot.append(current_z + margin)
+                        y_coords_plot.append(1.0)
+                    else: # Bare substrate
+                        x_coords_plot.extend([0, 0, margin])
+                        y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
+
                     ax_idx.plot(x_coords_plot, y_coords_plot, label=f'n\'(λ={l0_plot:.0f}nm)', color='purple', linewidth=1.5)
-                    ax_idx.set_xlabel('Depth (from substrate) (nm)'); ax_idx.set_ylabel("Real Part of Index (n')")
+                    
+                    ax_idx.set_xlabel('Depth (from substrate) (nm)')
+                    ax_idx.set_ylabel("Real Part of Index (n')")
                     ax_idx.set_title(f"Index Profile (at λ={l0_plot:.0f}nm)", fontsize=10)
-                    ax_idx.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray'); ax_idx.minorticks_on()
+                    ax_idx.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
+                    ax_idx.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
+                    ax_idx.minorticks_on()
                     ax_idx.set_xlim(x_coords_plot[0], x_coords_plot[-1])
                     valid_n = [n for n in [1.0, nSub_r_repr] + n_real_layers_repr if np.isfinite(n)]
                     min_n, max_n = (min(valid_n), max(valid_n)) if valid_n else (0.9, 2.5)
