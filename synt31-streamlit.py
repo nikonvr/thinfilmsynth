@@ -488,53 +488,61 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
         return qwot_multipliers, logs
 
 # --- Target and MSE Calculation ---
-def calculate_final_mse(res: Dict[str, np.ndarray], active_targets: List[Dict]) -> Tuple[Optional[float], int]:
+def calculate_final_mse_manual(res: Dict[str, np.ndarray], manual_targets: List[Dict]) -> Tuple[Optional[float], int]:
     total_squared_error = 0.0
     total_points_in_targets = 0
-    mse = None
-    if not active_targets or 'Ts' not in res or res['Ts'] is None or 'l' not in res or res['l'] is None:
-        return mse, total_points_in_targets
-
     res_l_np = np.asarray(res['l'])
     res_ts_np = np.asarray(res['Ts'])
-    if res_l_np.size == 0 or res_ts_np.size == 0 or res_l_np.size != res_ts_np.size:
-        return mse, total_points_in_targets
 
-    for target in active_targets:
-        try:
-            l_min, l_max = float(target['min']), float(target['max'])
-            t_min, t_max = float(target['target_min']), float(target['target_max'])
-            if not (0.0 <= t_min <= 1.0 and 0.0 <= t_max <= 1.0 and l_max >= l_min): continue
-        except (KeyError, ValueError, TypeError):
-            continue
-
+    for target in manual_targets:
+        l_min, l_max = float(target['min']), float(target['max'])
+        t_min, t_max = float(target['target_min']), float(target['target_max'])
         indices = np.where((res_l_np >= l_min) & (res_l_np <= l_max))[0]
         if indices.size > 0:
             calculated_Ts_in_zone = res_ts_np[indices]
             target_lambdas_in_zone = res_l_np[indices]
-            finite_mask = np.isfinite(calculated_Ts_in_zone)
-            calculated_Ts_in_zone = calculated_Ts_in_zone[finite_mask]
-            target_lambdas_in_zone = target_lambdas_in_zone[finite_mask]
-            if calculated_Ts_in_zone.size == 0: continue
-
             if abs(l_max - l_min) < 1e-9:
                 interpolated_target_t = np.full_like(target_lambdas_in_zone, t_min)
             else:
                 slope = (t_max - t_min) / (l_max - l_min)
                 interpolated_target_t = t_min + slope * (target_lambdas_in_zone - l_min)
-
             squared_errors = (calculated_Ts_in_zone - interpolated_target_t)**2
             total_squared_error += np.sum(squared_errors)
             total_points_in_targets += len(calculated_Ts_in_zone)
-
     if total_points_in_targets > 0:
-        mse = total_squared_error / total_points_in_targets
-    return mse, total_points_in_targets
+        return total_squared_error / total_points_in_targets, total_points_in_targets
+    return None, 0
 
-def parse_target_file(uploaded_file) -> Optional[List[Dict]]:
-    """Reads an uploaded Excel file and converts it into a list of target dictionaries."""
-    if uploaded_file is None:
-        return None
+def calculate_final_mse(res: Dict[str, np.ndarray], target_info: Dict) -> Tuple[Optional[float], int]:
+    if not target_info or 'type' not in target_info or 'data' not in target_info or not target_info['data']:
+        return None, 0
+
+    if target_info['type'] == 'file':
+        target_l = target_info['data']['lambdas']
+        target_t = target_info['data']['transmittances']
+        if target_l.size == 0: return None, 0
+
+        sim_l, sim_t = res.get('l'), res.get('Ts')
+        if sim_l is None or sim_t is None or sim_l.size == 0: return None, 0
+
+        valid_mask = (target_l >= sim_l.min()) & (target_l <= sim_l.max())
+        if not np.any(valid_mask): return None, 0
+        
+        target_l_valid, target_t_valid = target_l[valid_mask], target_t[valid_mask]
+        
+        calculated_t_at_target_l = np.interp(target_l_valid, sim_l, sim_t)
+        
+        squared_errors = (calculated_t_at_target_l - target_t_valid)**2
+        mse = np.mean(squared_errors)
+        return mse, len(target_l_valid)
+        
+    elif target_info['type'] == 'manual':
+        return calculate_final_mse_manual(res, target_info['data'])
+    
+    return None, 0
+
+def parse_target_file(uploaded_file) -> Optional[Dict[str, np.ndarray]]:
+    if uploaded_file is None: return None
     try:
         df = pd.read_excel(uploaded_file, header=None)
         if df.shape[1] < 2:
@@ -547,156 +555,117 @@ def parse_target_file(uploaded_file) -> Optional[List[Dict]]:
 
         if df.empty:
             st.warning("No valid numeric data found in the uploaded target file.")
-            return []
+            return {'lambdas': np.array([]), 'transmittances': np.array([])}
 
+        df = df.sort_values(by=df.columns[0])
         l_target = df.iloc[:, 0].values.astype(np.float64)
         t_target_percent = df.iloc[:, 1].values.astype(np.float64)
         t_target = np.clip(t_target_percent / 100.0, 0.0, 1.0)
-
-        file_targets = []
-        for l, t in zip(l_target, t_target):
-            file_targets.append({
-                'min': float(l), 'max': float(l),
-                'target_min': float(t), 'target_max': float(t)
-            })
-        return file_targets
+        
+        return {'lambdas': l_target, 'transmittances': t_target}
     except Exception as e:
         st.error(f"Error processing target file: {e}")
         return None
 
-def get_active_targets() -> Optional[List[Dict]]:
-    """
-    Gets targets from uploaded file if available, otherwise validates manual targets.
-    Returns a list of targets, or None if there's a validation error.
-    """
+def get_target_data() -> Optional[Dict[str, Any]]:
     uploaded_file = st.session_state.get("target_file_uploader_key")
     if uploaded_file:
-        parsed_targets = parse_target_file(uploaded_file)
-        if parsed_targets is not None:
-            st.info(f"Using {len(parsed_targets)} target points from '{uploaded_file.name}'. Manual targets ignored.")
-        return parsed_targets
+        file_data = parse_target_file(uploaded_file)
+        if file_data is not None:
+            st.info(f"Using {len(file_data['lambdas'])} target points from '{uploaded_file.name}'. Manual targets ignored.")
+            return {'type': 'file', 'data': file_data}
+        return None
     else:
-        return validate_targets()
+        manual_targets = validate_targets()
+        if manual_targets is not None:
+            return {'type': 'manual', 'data': manual_targets}
+        return None
 
 def validate_targets() -> Optional[List[Dict]]:
     active_targets = []
-    logs = []
     is_valid = True
     if 'targets' not in st.session_state or not isinstance(st.session_state.targets, list):
-        st.error("Internal error: Target list missing or invalid in session_state.")
-        return None
+        st.error("Internal error: Target list missing or invalid in session_state."); return None
 
     for i, target_state in enumerate(st.session_state.targets):
         if target_state.get('enabled', False):
             try:
-                l_min = float(target_state['min'])
-                l_max = float(target_state['max'])
-                t_min = float(target_state['target_min'])
-                t_max = float(target_state['target_max'])
-                if l_max < l_min:
-                    logs.append(f"Target {i+1} Error: λ max ({l_max:.1f}) < λ min ({l_min:.1f}).")
-                    is_valid = False; continue
-                if not (0.0 <= t_min <= 1.0 and 0.0 <= t_max <= 1.0):
-                    logs.append(f"Target {i+1} Error: Transmittance out of [0, 1] (Tmin={t_min:.2f}, Tmax={t_max:.2f}).")
-                    is_valid = False; continue
-                active_targets.append({
-                    'min': l_min, 'max': l_max,
-                    'target_min': t_min, 'target_max': t_max
-                })
-            except (KeyError, ValueError, TypeError) as e:
-                logs.append(f"Target {i+1} Error: Missing or invalid data ({e}).")
+                l_min, l_max = float(target_state['min']), float(target_state['max'])
+                t_min, t_max = float(target_state['target_min']), float(target_state['target_max'])
+                if l_max < l_min: is_valid = False; continue
+                if not (0.0 <= t_min <= 1.0 and 0.0 <= t_max <= 1.0): is_valid = False; continue
+                active_targets.append({'min': l_min, 'max': l_max, 'target_min': t_min, 'target_max': t_max})
+            except (KeyError, ValueError, TypeError):
                 is_valid = False; continue
 
     if not is_valid:
-        st.warning("Errors exist in the active spectral target definitions. Please correct.")
-        return None
-    elif not active_targets:
-        return []
-    else:
-        return active_targets
+        st.warning("Errors exist in the active spectral target definitions. Please correct."); return None
+    return active_targets
 
-def get_lambda_range_from_targets(validated_targets: Optional[List[Dict]]) -> Tuple[Optional[float], Optional[float]]:
-    overall_min, overall_max = None, None
-    if validated_targets:
-        all_mins = [t['min'] for t in validated_targets]
-        all_maxs = [t['max'] for t in validated_targets]
-        if all_mins: overall_min = min(all_mins)
-        if all_maxs: overall_max = max(all_maxs)
-    return overall_min, overall_max
+def get_lambda_range(target_info: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    if not target_info or not target_info.get('data'): return None, None
+    
+    if target_info['type'] == 'file':
+        lambdas = target_info['data']['lambdas']
+        return (np.min(lambdas), np.max(lambdas)) if lambdas.size > 0 else (None, None)
+    
+    elif target_info['type'] == 'manual':
+        manual_targets = target_info['data']
+        if not manual_targets: return None, None
+        all_mins = [t['min'] for t in manual_targets]
+        all_maxs = [t['max'] for t in manual_targets]
+        return min(all_mins), max(all_maxs)
+        
+    return None, None
+
+def interpolate_manual_targets(l_vec: np.ndarray, manual_targets: List[Dict]) -> np.ndarray:
+    target_t = np.zeros_like(l_vec)
+    # This simple loop assumes non-overlapping targets. Overlapping targets will take the value of the last one in the list.
+    for target in manual_targets:
+        l_min, l_max = target['min'], target['max']
+        t_min, t_max = target['target_min'], target['target_max']
+        mask = (l_vec >= l_min) & (l_vec <= l_max)
+        if np.any(mask):
+            l_segment = l_vec[mask]
+            if abs(l_max - l_min) < 1e-9:
+                interp_t = np.full_like(l_segment, t_min)
+            else:
+                slope = (t_max - t_min) / (l_max - l_min)
+                interp_t = t_min + slope * (l_segment - l_min)
+            target_t[mask] = interp_t
+    return target_t
 
 @jax.jit
-def calculate_mse_for_optimization_penalized_jax(ep_vector: jnp.ndarray,
-                                                     nH_arr: jnp.ndarray, nL_arr: jnp.ndarray, nSub_arr: jnp.ndarray,
-                                                     l_vec_optim: jnp.ndarray,
-                                                     active_targets_tuple: Tuple[Tuple[float, float, float, float], ...],
-                                                     min_thickness_phys_nm: float) -> jnp.ndarray:
+def calculate_mse_for_optimization_unified_jax(ep_vector: jnp.ndarray,
+                                               nH_arr: jnp.ndarray, nL_arr: jnp.ndarray, nSub_arr: jnp.ndarray,
+                                               l_vec_optim: jnp.ndarray,
+                                               target_t_at_l_vec: jnp.ndarray,
+                                               min_thickness_phys_nm: float) -> jnp.ndarray:
     below_min_mask = (ep_vector < min_thickness_phys_nm) & (ep_vector > 1e-12)
     penalty_thin = jnp.sum(jnp.where(below_min_mask, (min_thickness_phys_nm - ep_vector)**2, 0.0))
-    penalty_weight = 1e5
-    penalty_cost = penalty_thin * penalty_weight
+    penalty_cost = penalty_thin * 1e5
     ep_vector_calc = jnp.maximum(ep_vector, min_thickness_phys_nm)
 
     num_layers = len(ep_vector_calc)
     indices_alternating = jnp.where(jnp.arange(num_layers)[:, None] % 2 == 0, nH_arr, nL_arr)
     indices_alternating_T = indices_alternating.T
-
+    
     calculate_T_single_jit = jax.jit(calculate_single_wavelength_T_core)
     Ts_raw = vmap(calculate_T_single_jit, in_axes=(0, None, 0, 0))(
         l_vec_optim, ep_vector_calc, indices_alternating_T, nSub_arr
     )
     Ts = jnp.nan_to_num(Ts_raw, nan=0.0)
 
-    total_squared_error = 0.0
-    total_points_in_targets = 0
-    for i in range(len(active_targets_tuple)):
-        l_min, l_max, t_min, t_max = active_targets_tuple[i]
-        target_mask = (l_vec_optim >= l_min) & (l_vec_optim <= l_max)
-        slope = jnp.where(jnp.abs(l_max - l_min) < 1e-9, 0.0, (t_max - t_min) / (l_max - l_min))
-        interpolated_target_t_full = t_min + slope * (l_vec_optim - l_min)
-        squared_errors_full = (Ts - interpolated_target_t_full)**2
-        masked_sq_error = jnp.where(target_mask, squared_errors_full, 0.0)
-        total_squared_error += jnp.sum(masked_sq_error)
-        total_points_in_targets += jnp.sum(target_mask)
-
-    mse = jnp.where(total_points_in_targets > 0,
-                    total_squared_error / total_points_in_targets,
-                    jnp.inf)
+    squared_errors = (Ts - target_t_at_l_vec)**2
+    mse = jnp.mean(squared_errors)
+    
     final_cost = mse + penalty_cost
     return jnp.nan_to_num(final_cost, nan=jnp.inf, posinf=jnp.inf)
 
-@jax.jit
-def calculate_mse_arbitrary_sequence_jax(ep_vector: jnp.ndarray,
-                                         layer_indices_arr: jnp.ndarray,
-                                         nSub_arr: jnp.ndarray,
-                                         l_vec_eval: jnp.ndarray,
-                                         active_targets_tuple: Tuple[Tuple[float, float, float, float], ...]) -> jnp.ndarray:
-    layer_indices_arr_T = layer_indices_arr.T
-    calculate_T_single_jit = jax.jit(calculate_single_wavelength_T_core)
-    Ts_raw = vmap(calculate_T_single_jit, in_axes=(0, None, 0, 0))(
-        l_vec_eval, ep_vector, layer_indices_arr_T, nSub_arr
-    )
-    Ts = jnp.nan_to_num(Ts_raw, nan=0.0)
-
-    total_squared_error = 0.0
-    total_points_in_targets = 0
-    for i in range(len(active_targets_tuple)):
-        l_min, l_max, t_min, t_max = active_targets_tuple[i]
-        target_mask = (l_vec_eval >= l_min) & (l_vec_eval <= l_max)
-        slope = jnp.where(jnp.abs(l_max - l_min) < 1e-9, 0.0, (t_max - t_min) / (l_max - l_min))
-        interpolated_target_t_full = t_min + slope * (l_vec_eval - l_min)
-        squared_errors_full = (Ts - interpolated_target_t_full)**2
-        masked_sq_error = jnp.where(target_mask, squared_errors_full, 0.0)
-        total_squared_error += jnp.sum(masked_sq_error)
-        total_points_in_targets += jnp.sum(target_mask)
-
-    mse = jnp.where(total_points_in_targets > 0,
-                    total_squared_error / total_points_in_targets,
-                    jnp.inf)
-    return jnp.nan_to_num(mse, nan=jnp.inf, posinf=jnp.inf)
-
 # --- Optimization and Structure Modification ---
 def _run_core_optimization(ep_start_optim: np.ndarray,
-                           validated_inputs: Dict, active_targets: List[Dict],
+                           validated_inputs: Dict,
+                           target_info: Dict,
                            min_thickness_phys: float, log_prefix: str = ""
                            ) -> Tuple[Optional[np.ndarray], bool, float, List[str], str]:
     logs = []
@@ -711,16 +680,25 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
         return None, False, np.inf, logs, "Empty structure"
 
     try:
-        l_min_optim, l_max_optim = validated_inputs['l_range_deb'], validated_inputs['l_range_fin']
-        l_step_optim = validated_inputs['l_step']
         nH_material, nL_material, nSub_material = validated_inputs['nH_material'], validated_inputs['nL_material'], validated_inputs['nSub_material']
         maxiter, maxfun = MAXITER_HARDCODED, MAXFUN_HARDCODED
+        
+        # Determine lambda vector and target T vector for optimization
+        if target_info['type'] == 'file':
+            l_vec_optim_np = target_info['data']['lambdas']
+            target_t_at_l_vec_np = target_info['data']['transmittances']
+        else: # manual
+            manual_targets = target_info['data']
+            l_min_optim, l_max_optim = get_lambda_range(target_info)
+            l_step_optim = validated_inputs['l_step']
+            num_pts_optim = min(max(2, int(np.round((l_max_optim - l_min_optim) / l_step_optim)) + 1), 100)
+            l_vec_optim_np = np.geomspace(l_min_optim, l_max_optim, num_pts_optim)
+            target_t_at_l_vec_np = interpolate_manual_targets(l_vec_optim_np, manual_targets)
 
-        num_pts_optim = min(max(2, int(np.round((l_max_optim - l_min_optim) / l_step_optim)) + 1), 100)
-        l_vec_optim_np = np.geomspace(l_min_optim, l_max_optim, num_pts_optim)
         l_vec_optim_np = l_vec_optim_np[(l_vec_optim_np > 0) & np.isfinite(l_vec_optim_np)]
         if not l_vec_optim_np.size: raise ValueError("Failed to generate lambda vector for optimization.")
         l_vec_optim_jax = jnp.asarray(l_vec_optim_np)
+        target_t_at_l_vec_jax = jnp.asarray(target_t_at_l_vec_np)
 
         logs.append(f"{log_prefix}Preparing dispersive indices for {len(l_vec_optim_jax)} lambdas...")
         prep_start_time = time.time()
@@ -734,13 +712,12 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
             raise RuntimeError("Failed to load indices for optimization.")
         logs.append(f"{log_prefix} Index preparation finished in {time.time() - prep_start_time:.3f}s.")
 
-        active_targets_tuple = tuple((float(t['min']), float(t['max']), float(t['target_min']), float(t['target_max'])) for t in active_targets)
         static_args_for_jax = (
             nH_arr_optim, nL_arr_optim, nSub_arr_optim,
-            l_vec_optim_jax, active_targets_tuple,
+            l_vec_optim_jax, target_t_at_l_vec_jax,
             min_thickness_phys
         )
-        value_and_grad_fn = jax.jit(jax.value_and_grad(calculate_mse_for_optimization_penalized_jax))
+        value_and_grad_fn = jax.jit(jax.value_and_grad(calculate_mse_for_optimization_unified_jax))
 
         def scipy_obj_grad_wrapper(ep_vector_np_in, *args):
             try:
@@ -1507,15 +1484,15 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
     st.session_state.last_mse = None
     with st.spinner(f"{calc_type} calculation in progress..."):
         try:
-            active_targets = get_active_targets()
-            if active_targets is None:
+            target_info = get_target_data()
+            if target_info is None:
                 st.error("Target definition invalid. Check logs, file, or manual targets and correct."); return
 
-            if not active_targets:
+            if not target_info['data']:
                 st.warning("No active targets. Default lambda range used (400-700nm). MSE calculation will be N/A.")
                 l_min_plot, l_max_plot = 400.0, 700.0
             else:
-                l_min_plot, l_max_plot = get_lambda_range_from_targets(active_targets)
+                l_min_plot, l_max_plot = get_lambda_range(target_info)
                 if l_min_plot is None or l_max_plot is None or l_max_plot < l_min_plot:
                     st.error("Could not determine a valid lambda range from targets."); return
 
@@ -1568,21 +1545,24 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 'l0_used': validated_inputs['l0'],
                 'nH_used': nH_mat, 'nL_used': nL_mat, 'nSub_used': nSub_mat,
             }
-            if active_targets:
-                num_pts_optim_display = min(max(2, int(np.round((l_max_plot - l_min_plot) / validated_inputs['l_step'])) + 1), 100)
-                l_vec_optim_np_display = np.geomspace(l_min_plot, l_max_plot, num_pts_optim_display)
-                l_vec_optim_np_display = l_vec_optim_np_display[(l_vec_optim_np_display > 0) & np.isfinite(l_vec_optim_np_display)]
-                if l_vec_optim_np_display.size > 0:
-                    results_optim_grid, logs_mse_calc = calculate_T_from_ep_jax(
-                        ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_display, EXCEL_FILE_PATH
-                    )
-                    if results_optim_grid is not None:
-                        mse_display, num_pts_mse = calculate_final_mse(results_optim_grid, active_targets)
-                        st.session_state.last_mse = mse_display
-                        st.session_state.last_calc_results['res_optim_grid'] = results_optim_grid
-                    else: st.session_state.last_mse = None
-                else: st.session_state.last_mse = None
-            else: st.session_state.last_mse = None
+            if target_info['data']:
+                # For file targets, we need to interpolate the fine results to get an accurate MSE
+                # For manual targets, we can use the optimization grid for a consistent MSE value
+                if target_info['type'] == 'file':
+                    mse_display, num_pts_mse = calculate_final_mse(results_fine, target_info)
+                    st.session_state.last_mse = mse_display
+                else: # Manual targets
+                    num_pts_optim_display = min(max(2, int(np.round((l_max_plot - l_min_plot) / validated_inputs['l_step'])) + 1), 100)
+                    l_vec_optim_np_display = np.geomspace(l_min_plot, l_max_plot, num_pts_optim_display)
+                    l_vec_optim_np_display = l_vec_optim_np_display[(l_vec_optim_np_display > 0) & np.isfinite(l_vec_optim_np_display)]
+                    if l_vec_optim_np_display.size > 0:
+                        results_optim_grid, _ = calculate_T_from_ep_jax(
+                            ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_display, EXCEL_FILE_PATH
+                        )
+                        if results_optim_grid is not None:
+                            mse_display, _ = calculate_final_mse(results_optim_grid, target_info)
+                            st.session_state.last_mse = mse_display
+                            st.session_state.last_calc_results['res_optim_grid'] = results_optim_grid
 
             st.session_state.is_optimized_state = is_optimized_run
             if not is_optimized_run:
@@ -1600,11 +1580,11 @@ def run_local_optimization_wrapper():
     clear_optimized_state()
     with st.spinner("Local optimization in progress..."):
         try:
-            active_targets = get_active_targets()
-            if active_targets is None or not active_targets:
+            target_info = get_target_data()
+            if target_info is None or not target_info['data']:
                 st.error("Local optimization requires active and valid targets."); return
 
-            l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
+            l_min_opt, l_max_opt = get_lambda_range(target_info)
             if l_min_opt is None:
                 st.error("Could not determine lambda range for optimization."); return
 
@@ -1630,7 +1610,7 @@ def run_local_optimization_wrapper():
                 st.error("Failed initial thickness calculation for local optimization."); return
 
             final_ep, success, final_cost, optim_logs, msg = \
-                _run_core_optimization(ep_start, validated_inputs, active_targets,
+                _run_core_optimization(ep_start, validated_inputs, target_info,
                                        MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ")
 
             if success and final_ep is not None:
@@ -1676,11 +1656,11 @@ def run_scan_optimization_wrapper():
                 st.warning(f"Scan + Opt: Number of layers capped at 18 (was {st.session_state.initial_layer_number}).")
             st.session_state.initial_layer_number = initial_layer_number_to_use
 
-            active_targets = get_active_targets()
-            if active_targets is None or not active_targets:
+            target_info = get_target_data()
+            if target_info is None or not target_info['data']:
                 st.error("QWOT Scan+Opt requires active and valid targets."); return
 
-            l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
+            l_min_opt, l_max_opt = get_lambda_range(target_info)
             if l_min_opt is None:
                 st.error("Could not determine lambda range for QWOT Scan+Opt."); return
 
@@ -1706,7 +1686,9 @@ def run_scan_optimization_wrapper():
 
             nSub_arr_scan, logs_sub_scan = _get_nk_array_for_lambda_vec(nSub_mat, l_vec_eval_sparse_jax, EXCEL_FILE_PATH)
             if nSub_arr_scan is None: raise RuntimeError("Failed substrate index preparation for scan.")
-            active_targets_tuple = tuple((t['min'], t['max'], t['target_min'], t['target_max']) for t in active_targets)
+            
+            # For scan, we still use the manual-style target tuple for simplicity
+            active_targets_tuple = tuple((t['min'], t['max'], t['target_min'], t['target_max']) for t in validate_targets() or [])
 
             l0_nominal = validated_inputs['l0']
             l0_values_to_test = sorted(list(set([l0_nominal, l0_nominal * 1.2, l0_nominal * 0.8])))
@@ -1748,12 +1730,12 @@ def run_scan_optimization_wrapper():
 
                 st.write("    Running Optimization 1/2...")
                 final_ep_1, success_1, final_cost_1, _, msg_1 = \
-                    _run_core_optimization(ep_start_optim, validated_inputs, active_targets,
+                    _run_core_optimization(ep_start_optim, validated_inputs, target_info,
                                            MIN_THICKNESS_PHYS_NM, log_prefix=f"  [OptScan {idx+1}-1] ")
                 if success_1 and final_ep_1 is not None:
                     st.write(f"    Optimization 1/2 finished ({msg_1}). MSE: {final_cost_1:.4e}. Running Optimization 2/2...")
                     final_ep_2, success_2, final_cost_2, _, msg_2 = \
-                        _run_core_optimization(final_ep_1, validated_inputs, active_targets,
+                        _run_core_optimization(final_ep_1, validated_inputs, target_info,
                                                MIN_THICKNESS_PHYS_NM, log_prefix=f"  [OptScan {idx+1}-2] ")
                     if success_2 and final_ep_2 is not None:
                         st.write(f"    Optimization 2/2 finished ({msg_2}). Final MSE: {final_cost_2:.4e}")
@@ -1798,11 +1780,11 @@ def run_auto_mode_wrapper():
     st.session_state.last_mse = None
     with st.spinner("Automatic Mode in progress (can be very long)..."):
         try:
-            active_targets = get_active_targets()
-            if active_targets is None or not active_targets:
+            target_info = get_target_data()
+            if target_info is None or not target_info['data']:
                 st.error("Auto Mode requires active and valid targets."); return
 
-            l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
+            l_min_opt, l_max_opt = get_lambda_range(target_info)
             if l_min_opt is None:
                 st.error("Could not determine lambda range for Auto Mode."); return
 
@@ -1822,7 +1804,7 @@ def run_auto_mode_wrapper():
             ep_start_auto = st.session_state.optimized_ep.copy() if st.session_state.get('is_optimized_state') and st.session_state.get('optimized_ep') is not None else None
             final_ep, final_mse, auto_logs = run_auto_mode(
                 initial_ep=ep_start_auto, validated_inputs=validated_inputs,
-                active_targets=active_targets, excel_file_path=EXCEL_FILE_PATH, log_callback=add_log
+                active_targets=target_info['data'], excel_file_path=EXCEL_FILE_PATH, log_callback=add_log
             )
 
             if final_ep is not None and np.isfinite(final_mse):
@@ -1880,11 +1862,11 @@ def run_remove_thin_wrapper():
     with st.spinner("Removing thin layer + Re-optimizing..."):
         try:
             st.session_state.ep_history.append(ep_start_removal.copy())
-            active_targets = get_active_targets()
-            if active_targets is None or not active_targets:
+            target_info = get_target_data()
+            if target_info is None or not target_info['data']:
                 st.session_state.ep_history.pop(); st.error("Removal aborted: invalid or missing targets for re-optimization."); return
 
-            l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
+            l_min_opt, l_max_opt = get_lambda_range(target_info)
             if l_min_opt is None:
                 st.session_state.ep_history.pop(); st.error("Removal aborted: invalid lambda range for re-optimization."); return
 
@@ -1908,7 +1890,7 @@ def run_remove_thin_wrapper():
             if structure_changed and ep_after_removal is not None:
                 st.write("Re-optimizing after removal...")
                 final_ep, success, final_cost, optim_logs, msg = \
-                    _run_core_optimization(ep_after_removal, validated_inputs, active_targets,
+                    _run_core_optimization(ep_after_removal, validated_inputs, target_info,
                                            MIN_THICKNESS_PHYS_NM, log_prefix="  [ReOpt Thin] ")
                 if success and final_ep is not None:
                     st.session_state.optimized_ep = final_ep.copy()
@@ -1936,7 +1918,7 @@ def run_remove_thin_wrapper():
                         if l_vec_disp.size > 0:
                             results_fail_grid, _ = calculate_T_from_ep_jax(ep_after_removal, nH_mat, nL_mat, nSub_mat, l_vec_disp, EXCEL_FILE_PATH)
                             if results_fail_grid:
-                                mse_fail, _ = calculate_final_mse(results_fail_grid, active_targets)
+                                mse_fail, _ = calculate_final_mse(results_fail_grid, target_info)
                                 st.session_state.last_mse = mse_fail
                             else: st.session_state.last_mse = None
                         qwots_fail, _ = calculate_qwot_from_ep(ep_after_removal, validated_inputs['l0'], nH_mat, nL_mat, EXCEL_FILE_PATH)
@@ -2141,12 +2123,12 @@ with main_layout[1]:
     if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
         results_data = st.session_state.last_calc_results
         res_fine_plot = results_data.get('res_fine')
-        active_targets_plot = get_active_targets() # Use the helper here to get correct targets for plotting
+        target_info_plot = get_target_data()
         mse_plot = st.session_state.last_mse
         method_name_plot = results_data.get('method_name', '')
         res_optim_grid_plot = results_data.get('res_optim_grid')
 
-        if res_fine_plot and active_targets_plot is not None:
+        if res_fine_plot and target_info_plot is not None:
             fig_spec, ax_spec = plt.subplots(figsize=(12, 4))
             opt_method_str = f" ({method_name_plot})" if method_name_plot else ""
             window_title = f'Spectral Response {"Optimized" if st.session_state.is_optimized_state else "Nominal"}{opt_method_str}'
@@ -2157,7 +2139,8 @@ with main_layout[1]:
                     res_l_plot, res_ts_plot = np.asarray(res_fine_plot['l']), np.asarray(res_fine_plot['Ts'])
                     line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
                     plotted_target_label = False
-                    if active_targets_plot:
+                    if target_info_plot['data']:
+                        active_targets_plot = target_info_plot['data'] if target_info_plot['type'] == 'manual' else [{'min': l, 'max': l, 'target_min': t, 'target_max': t} for l, t in zip(target_info_plot['data']['lambdas'], target_info_plot['data']['transmittances'])]
                         for i, target in enumerate(active_targets_plot):
                             l_min, l_max = target['min'], target['max']
                             t_min, t_max_corr = target['target_min'], target['target_max']
@@ -2166,14 +2149,6 @@ with main_layout[1]:
                             ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
                             ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', label='_nolegend_', zorder=6)
                             plotted_target_label = True
-                            if res_optim_grid_plot and 'l' in res_optim_grid_plot and res_optim_grid_plot['l'].size > 0:
-                                res_l_optim = np.asarray(res_optim_grid_plot['l'])
-                                indices_optim = np.where((res_l_optim >= l_min) & (res_l_optim <= l_max))[0]
-                                if indices_optim.size > 0:
-                                    optim_lambdas = res_l_optim[indices_optim]
-                                    if abs(l_max - l_min) < 1e-9: optim_target_t = np.full_like(optim_lambdas, t_min)
-                                    else: slope = (t_max_corr - t_min) / (l_max - l_min); optim_target_t = t_min + slope * (optim_lambdas - l_min)
-                                    ax_spec.plot(optim_lambdas, optim_target_t, marker='.', color='darkred', linestyle='none', markersize=4, alpha=0.5, label='_nolegend_', zorder=6)
                 ax_spec.set_xlabel("Wavelength (nm)"); ax_spec.set_ylabel('Transmittance')
                 ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
                 ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
@@ -2199,7 +2174,6 @@ with main_layout[1]:
         ep_plot, l0_plot = results_data.get('ep_used'), results_data.get('l0_used')
         nH_plot, nL_plot, nSub_plot = results_data.get('nH_used'), results_data.get('nL_used'), results_data.get('nSub_used')
         is_optimized_plot = st.session_state.is_optimized_state
-        material_sequence_plot = st.session_state.get('material_sequence')
         if all(v is not None for v in [ep_plot, l0_plot, nH_plot, nL_plot, nSub_plot]):
             with plot_col1:
                 fig_idx, ax_idx = plt.subplots(figsize=(6, 4))
@@ -2212,38 +2186,36 @@ with main_layout[1]:
                     num_layers = len(ep_plot)
                     n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
                     
+                    x_coords_plot, y_coords_plot = [], []
                     total_thickness = np.sum(ep_plot) if num_layers > 0 else 0
                     margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
                     
-                    x_coords_plot = [-margin, 0]
-                    y_coords_plot = [nSub_r_repr, nSub_r_repr]
+                    x_coords_plot.extend([-margin, 0])
+                    y_coords_plot.extend([nSub_r_repr, nSub_r_repr])
+                    last_n = nSub_r_repr
+                    current_z = 0
 
                     if num_layers > 0:
-                        current_z = 0
                         for i in range(num_layers):
                             layer_n_real = n_real_layers_repr[i]
-                            x_coords_plot.append(current_z)
-                            y_coords_plot.append(layer_n_real)
+                            x_coords_plot.extend([current_z, current_z])
+                            y_coords_plot.extend([last_n, layer_n_real])
                             current_z += ep_plot[i]
                             x_coords_plot.append(current_z)
                             y_coords_plot.append(layer_n_real)
-                        
-                        x_coords_plot.append(current_z)
-                        y_coords_plot.append(1.0)
-                        x_coords_plot.append(current_z + margin)
-                        y_coords_plot.append(1.0)
-                    else: # Bare substrate
-                        x_coords_plot.extend([0, 0, margin])
-                        y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
-
+                            last_n = layer_n_real
+                    
+                    x_coords_plot.extend([current_z, current_z])
+                    y_coords_plot.extend([last_n, 1.0])
+                    x_coords_plot.append(current_z + margin)
+                    y_coords_plot.append(1.0)
+                    
                     ax_idx.plot(x_coords_plot, y_coords_plot, label=f'n\'(λ={l0_plot:.0f}nm)', color='purple', linewidth=1.5)
                     
                     ax_idx.set_xlabel('Depth (from substrate) (nm)')
                     ax_idx.set_ylabel("Real Part of Index (n')")
                     ax_idx.set_title(f"Index Profile (at λ={l0_plot:.0f}nm)", fontsize=10)
-                    ax_idx.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
-                    ax_idx.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
-                    ax_idx.minorticks_on()
+                    ax_idx.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray'); ax_idx.minorticks_on()
                     ax_idx.set_xlim(x_coords_plot[0], x_coords_plot[-1])
                     valid_n = [n for n in [1.0, nSub_r_repr] + n_real_layers_repr if np.isfinite(n)]
                     min_n, max_n = (min(valid_n), max(valid_n)) if valid_n else (0.9, 2.5)
