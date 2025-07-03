@@ -1997,54 +1997,56 @@ with main_layout[1]:
         mse_plot = st.session_state.last_mse
         method_name_plot = results_data.get('method_name', '')
         res_optim_grid_plot = results_data.get('res_optim_grid')
-        if res_fine_plot and active_targets_plot is not None:
-            fig_spec, ax_spec = plt.subplots(figsize=(12, 4)) 
-            opt_method_str = f" ({method_name_plot})" if method_name_plot else ""
-            window_title = f'Spectral Response {"Optimized" if st.session_state.is_optimized_state else "Nominal"}{opt_method_str}'
-            fig_spec.suptitle(window_title, fontsize=12, weight='bold')
-            line_ts = None
-            try:
-                if res_fine_plot and 'l' in res_fine_plot and 'Ts' in res_fine_plot and res_fine_plot['l'] is not None and len(res_fine_plot['l']) > 0:
-                    res_l_plot = np.asarray(res_fine_plot['l'])
-                    res_ts_plot = np.asarray(res_fine_plot['Ts'])
-                    line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
-                    
-                    if st.session_state.get("target_definition_type") == "Import from File" and st.session_state.get('uploaded_target_data') is not None:
-                        target_points = st.session_state.uploaded_target_data
-                        l_target = target_points[:, 0]
-                        t_target = target_points[:, 1]
-                        ax_spec.plot(l_target, t_target, 'r--', label='Target (File)', linewidth=1.5, alpha=0.9, zorder=5)
-                    elif active_targets_plot:
-                        plotted_target_label = False
-                        for i, target in enumerate(active_targets_plot):
-                            l_min, l_max = target['min'], target['max']
-                            t_min, t_max_corr = target['target_min'], target['target_max']
-                            x_coords, y_coords = [l_min, l_max], [t_min, t_max_corr]
-                            label = 'Target(s)' if not plotted_target_label else "_nolegend_"
-                            ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
-                            plotted_target_label = True
+        
+        fig_spec, ax_spec = plt.subplots(figsize=(12, 4))
+        try:
+            if res_fine_plot and 'l' in res_fine_plot and res_fine_plot['l'].size > 0:
+                opt_method_str = f" ({method_name_plot})" if method_name_plot else ""
+                window_title = f'Spectral Response {"Optimized" if st.session_state.is_optimized_state else "Nominal"}{opt_method_str}'
+                fig_spec.suptitle(window_title, fontsize=12, weight='bold')
+
+                res_l_plot = np.asarray(res_fine_plot['l'])
+                res_ts_plot = np.asarray(res_fine_plot['Ts'])
+                ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
+                
+                if st.session_state.get("target_definition_type") == "Import from File" and st.session_state.get('uploaded_target_data') is not None:
+                    target_points = st.session_state.uploaded_target_data
+                    l_target = target_points[:, 0]
+                    t_target = target_points[:, 1]
+                    ax_spec.plot(l_target, t_target, 'r--', label='Target (File)', linewidth=1.5, alpha=0.9, zorder=5)
+                elif active_targets_plot:
+                    plotted_target_label = False
+                    for i, target in enumerate(active_targets_plot):
+                        x_coords = [target['min'], target['max']]
+                        y_coords = [target['target_min'], target['target_max']]
+                        label = 'Target(s)' if not plotted_target_label else "_nolegend_"
+                        ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
+                        plotted_target_label = True
 
                 ax_spec.set_xlabel("Wavelength (nm)")
                 ax_spec.set_ylabel('Transmittance')
                 ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
                 ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
                 ax_spec.minorticks_on()
-                if len(res_l_plot) > 0 : ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
+                ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
                 ax_spec.set_ylim(-0.05, 1.05)
                 ax_spec.legend(fontsize=8)
-                if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
-                else: mse_text = "MSE: N/A"
+                mse_text = f"MSE = {mse_plot:.3e}" if mse_plot is not None and np.isfinite(mse_plot) else "MSE: N/A"
                 ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
                                      bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
-            except Exception as e_spec:
-                ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
-            plt.tight_layout(rect=[0, 0, 1, 0.93])
-            st.pyplot(fig_spec)
-            plt.close(fig_spec)
-        else:
-            st.warning("Missing or invalid calculation data for spectrum display.")
+            else:
+                ax_spec.text(0.5, 0.5, "No data to display.", ha='center', va='center')
+
+        except Exception as e_spec:
+            ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.93])
+        st.pyplot(fig_spec)
+        plt.close(fig_spec)
+
     else:
         st.info("Run an evaluation or optimization to see results.")
+
     plot_col1, plot_col2 = st.columns(2)
     if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
         results_data = st.session_state.last_calc_results
