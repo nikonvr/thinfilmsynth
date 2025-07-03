@@ -1831,6 +1831,21 @@ def trigger_nominal_recalc():
         }
 
 st.title("🔬 Thin Film Optimizer (Streamlit + JAX)")
+
+if st.session_state.get('needs_rerun_calc', False):
+    params = st.session_state.rerun_calc_params
+    force_ep_val = params.get('force_ep')
+    st.session_state.needs_rerun_calc = False
+    st.session_state.rerun_calc_params = {}
+    st.session_state.calculating = True
+    run_calculation_wrapper(
+        is_optimized_run=params.get('is_optimized_run', False),
+        method_name=params.get('method_name', 'Auto Recalc'),
+        force_ep=force_ep_val
+    )
+    st.session_state.calculating = False
+    st.rerun()
+
 menu_cols = st.columns(8)
 with menu_cols[0]:
     if st.button("📊 Eval Nom.", key="eval_nom_top", help="Evaluate Nominal Structure"):
@@ -2167,17 +2182,3 @@ with main_layout[1]:
             st.warning("Missing data to display profiles.")
     else:
         pass
-
-if st.session_state.get('needs_rerun_calc', False):
-    params = st.session_state.rerun_calc_params
-    force_ep_val = params.get('force_ep')
-    st.session_state.needs_rerun_calc = False
-    st.session_state.rerun_calc_params = {}
-    st.session_state.calculating = True
-    run_calculation_wrapper(
-        is_optimized_run=params.get('is_optimized_run', False),
-        method_name=params.get('method_name', 'Auto Recalc'),
-        force_ep=force_ep_val
-    )
-    st.session_state.calculating = False
-    st.rerun()
