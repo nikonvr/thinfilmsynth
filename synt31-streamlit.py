@@ -2008,24 +2008,22 @@ with main_layout[1]:
                     res_l_plot = np.asarray(res_fine_plot['l'])
                     res_ts_plot = np.asarray(res_fine_plot['Ts'])
                     line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
-                    plotted_target_label = False
-                    if active_targets_plot:
+                    
+                    if st.session_state.get("target_definition_type") == "Import from File" and st.session_state.get('uploaded_target_data') is not None:
+                        target_points = st.session_state.uploaded_target_data
+                        l_target = target_points[:, 0]
+                        t_target = target_points[:, 1]
+                        ax_spec.plot(l_target, t_target, 'r--', label='Target (File)', linewidth=1.5, alpha=0.9, zorder=5)
+                    elif active_targets_plot:
+                        plotted_target_label = False
                         for i, target in enumerate(active_targets_plot):
                             l_min, l_max = target['min'], target['max']
                             t_min, t_max_corr = target['target_min'], target['target_max']
                             x_coords, y_coords = [l_min, l_max], [t_min, t_max_corr]
                             label = 'Target(s)' if not plotted_target_label else "_nolegend_"
-                            line_target, = ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
-                            marker_target = ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', label='_nolegend_', zorder=6)
+                            ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
                             plotted_target_label = True
-                            if res_optim_grid_plot and 'l' in res_optim_grid_plot and res_optim_grid_plot['l'].size > 0:
-                                res_l_optim = np.asarray(res_optim_grid_plot['l'])
-                                indices_optim = np.where((res_l_optim >= l_min) & (res_l_optim <= l_max))[0]
-                                if indices_optim.size > 0:
-                                    optim_lambdas = res_l_optim[indices_optim]
-                                    if abs(l_max - l_min) < 1e-9: optim_target_t = np.full_like(optim_lambdas, t_min)
-                                    else: slope = (t_max_corr - t_min) / (l_max - l_min); optim_target_t = t_min + slope * (optim_lambdas - l_min)
-                                    ax_spec.plot(optim_lambdas, optim_target_t, marker='.', color='darkred', linestyle='none', markersize=4, alpha=0.5, label='_nolegend_', zorder=6)
+
                 ax_spec.set_xlabel("Wavelength (nm)")
                 ax_spec.set_ylabel('Transmittance')
                 ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
@@ -2033,7 +2031,7 @@ with main_layout[1]:
                 ax_spec.minorticks_on()
                 if len(res_l_plot) > 0 : ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
                 ax_spec.set_ylim(-0.05, 1.05)
-                if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
+                ax_spec.legend(fontsize=8)
                 if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
                 else: mse_text = "MSE: N/A"
                 ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
