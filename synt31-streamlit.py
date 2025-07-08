@@ -1556,7 +1556,7 @@ def calculate_and_display_rmse_wrapper():
 
     target_info = get_target_data()
     if target_info is None or not target_info.get('data'):
-        st.toast("Impossible de calculer le RMSE: Aucune donnée cible valide trouvée.", icon="🎯")
+        st.toast("Impossible de calculer le RMSE: Aucune donnée cible valide trouvée.", icon="�")
         st.session_state.last_rmse = None
         return
 
@@ -2059,6 +2059,7 @@ if 'init_done' not in st.session_state:
     st.session_state.last_rmse = None
     st.session_state.needs_rerun_calc = False
     st.session_state.rerun_calc_params = {}
+    st.session_state.auto_scale_y = True
     try:
         mats, logs = get_available_materials_from_excel(EXCEL_FILE_PATH)
         add_log(logs)
@@ -2212,6 +2213,8 @@ with main_layout[0]:
                 on_change=trigger_nominal_recalc,
                 help="Applique une correction pour la réflexion incohérente de la face arrière. Cela affecte l'affichage et l'optimisation.")
 
+    st.checkbox("Échelle de transmittance automatique", value=st.session_state.get('auto_scale_y', True), key="auto_scale_y", on_change=trigger_nominal_recalc, help="Ajuste automatiquement l'axe Y du graphe de transmittance aux données affichées.")
+
     st.markdown("---")
     st.caption("Cibles Manuelles (ignorées si un fichier est téléchargé)")
     hdr_cols = st.columns([0.5, 1, 1, 1, 1])
@@ -2256,11 +2259,26 @@ with main_layout[1]:
             fig_spec.suptitle(window_title, fontsize=12, weight='bold')
             line_ts = None
             try:
+                all_y_values_for_scaling = []
                 if res_fine_plot and 'l' in res_fine_plot and 'Ts' in res_fine_plot and res_fine_plot['l'] is not None and len(res_fine_plot['l']) > 0:
                     res_l_plot, res_ts_plot = np.asarray(res_fine_plot['l']), np.asarray(res_fine_plot['Ts'])
                     line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
+                    all_y_values_for_scaling.append(res_ts_plot)
+                    
                     plotted_target_label = False
                     if target_info_plot and target_info_plot['data']:
+                        # Add target values to the list for scaling
+                        if target_info_plot['type'] == 'manual':
+                            manual_targets_plot = target_info_plot['data']
+                            all_t_targets = [t['target_min'] for t in manual_targets_plot] + [t['target_max'] for t in manual_targets_plot]
+                            if all_t_targets:
+                                all_y_values_for_scaling.append(np.array(all_t_targets))
+                        elif target_info_plot['type'] == 'file':
+                            target_t_values = target_info_plot['data']['transmittances']
+                            if target_t_values.size > 0:
+                                all_y_values_for_scaling.append(target_t_values)
+
+                        # Plot the targets
                         active_targets_plot = target_info_plot['data'] if target_info_plot['type'] == 'manual' else [{'min': l, 'max': l, 'target_min': t, 'target_max': t} for l, t in zip(target_info_plot['data']['lambdas'], target_info_plot['data']['transmittances'])]
                         for i, target in enumerate(active_targets_plot):
                             l_min, l_max = target['min'], target['max']
@@ -2270,12 +2288,24 @@ with main_layout[1]:
                             ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
                             ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', label='_nolegend_', zorder=6)
                             plotted_target_label = True
+
                 ax_spec.set_xlabel("Longueur d'onde (nm)"); ax_spec.set_ylabel('Transmittance')
                 ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
                 ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
                 ax_spec.minorticks_on()
                 if 'res_l_plot' in locals() and len(res_l_plot) > 0 : ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
-                ax_spec.set_ylim(-0.05, 1.05)
+                
+                # Y-axis auto-scaling logic
+                if st.session_state.get('auto_scale_y', True) and all_y_values_for_scaling:
+                    full_y_data = np.concatenate(all_y_values_for_scaling)
+                    y_min, y_max = np.min(full_y_data), np.max(full_y_data)
+                    y_range = y_max - y_min
+                    if y_range < 1e-6: y_range = 0.1 # Handle flat data
+                    padding = y_range * 0.05
+                    ax_spec.set_ylim(y_min - padding, y_max + padding)
+                else:
+                    ax_spec.set_ylim(-0.05, 1.05)
+                
                 if 'plotted_target_label' in locals() and (plotted_target_label or (line_ts is not None)): ax_spec.legend(fontsize=8)
                 rmse_text = f"RMSE = {rmse_plot:.3e}" if rmse_plot is not None and np.isfinite(rmse_plot) else "RMSE: N/A"
                 ax_spec.text(0.98, 0.98, rmse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9, bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
