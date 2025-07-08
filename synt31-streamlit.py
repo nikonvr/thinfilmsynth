@@ -276,7 +276,7 @@ def compute_stack_matrix_core_jax(ep_vector: jnp.ndarray, layer_indices: jnp.nda
 
 @jax.jit
 def calculate_single_wavelength_TR_core(l_val: jnp.ndarray, ep_vector_contig: jnp.ndarray,
-                                       layer_indices_at_lval: jnp.ndarray, nSub_at_lval: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                                        layer_indices_at_lval: jnp.ndarray, nSub_at_lval: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Calculates Transmittance (T) and Reflectance (R) for a single wavelength.
     This is the core physics function that is vectorized for full spectrum calculation.
@@ -1564,6 +1564,36 @@ def undo_remove_wrapper():
         st.error(f"Unexpected error during undo: {e}")
         clear_optimized_state()
 
+def calculate_and_display_mse_wrapper():
+    """
+    Calculates MSE on demand based on the last computed results and current targets.
+    Updates the session state with the new MSE.
+    """
+    if 'last_calc_results' not in st.session_state or not st.session_state.last_calc_results:
+        st.toast("Please run a calculation first ('Eval Nom.' or an optimization).", icon="📊")
+        return
+
+    target_info = get_target_data()
+    if target_info is None or not target_info.get('data'):
+        st.toast("Cannot calculate MSE: No valid target data found.", icon="🎯")
+        st.session_state.last_mse = None
+        return
+
+    results_data = st.session_state.last_calc_results
+    # Use the fine-grid results for the most accurate MSE display
+    res_to_use = results_data.get('res_fine')
+    if res_to_use is None:
+        st.toast("Error: Last calculation data is invalid.", icon="🔥")
+        return
+
+    mse, num_pts = calculate_final_mse(res_to_use, target_info)
+
+    st.session_state.last_mse = mse
+    if mse is not None and np.isfinite(mse):
+        st.toast(f"MSE calculated: {mse:.4e} (over {num_pts} points)", icon="✅")
+    else:
+        st.toast("Could not calculate MSE. Check targets and calculation range.", icon="⚠️")
+
 def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force_ep: Optional[np.ndarray] = None):
     """
     Main wrapper to run a calculation (either nominal or optimized) and update the UI.
@@ -2121,7 +2151,7 @@ def trigger_nominal_recalc():
         }
 
 st.title("🔬 Thin Film Optimizer (Streamlit + JAX)")
-menu_cols = st.columns(8)
+menu_cols = st.columns(9)
 with menu_cols[0]:
     if st.button("📊 Eval Nom.", key="eval_nom_top", help="Evaluate Nominal Structure"):
         st.session_state.needs_rerun_calc = True
@@ -2165,6 +2195,11 @@ with menu_cols[7]:
             st.rerun()
         except Exception as e:
             st.error(f"Error reloading materials: {e}")
+with menu_cols[8]:
+    can_calc_mse = 'last_calc_results' in st.session_state and st.session_state.last_calc_results
+    if st.button("Calc. MSE", key="calc_mse_top", help="Calculate MSE between current curve and target", disabled=not can_calc_mse):
+        calculate_and_display_mse_wrapper()
+        st.rerun()
 st.divider()
 
 main_layout = st.columns([1, 3])
