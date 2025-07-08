@@ -374,10 +374,10 @@ def calculate_TR_from_ep_jax(ep_vector: Union[np.ndarray, List[float]],
 
 
 def calculate_TR_from_ep_arbitrary_jax(ep_vector: Union[np.ndarray, List[float]],
-                                       material_sequence: List[str],
-                                       nSub_material: MaterialInputType,
-                                       l_vec: Union[np.ndarray, List[float]],
-                                       excel_file_path: str) -> Tuple[Optional[Dict[str, np.ndarray]], List[str]]:
+                                           material_sequence: List[str],
+                                           nSub_material: MaterialInputType,
+                                           l_vec: Union[np.ndarray, List[float]],
+                                           excel_file_path: str) -> Tuple[Optional[Dict[str, np.ndarray]], List[str]]:
     """Calculates T and R for a stack with an arbitrary sequence of materials."""
     logs = []
     l_vec_jnp = jnp.asarray(l_vec, dtype=jnp.float64)
@@ -690,11 +690,11 @@ def interpolate_manual_targets(l_vec: np.ndarray, manual_targets: List[Dict]) ->
 
 @jax.jit
 def calculate_rmse_for_optimization_unified_jax(ep_vector: jnp.ndarray,
-                                               nH_arr: jnp.ndarray, nL_arr: jnp.ndarray, nSub_arr: jnp.ndarray,
-                                               l_vec_optim: jnp.ndarray,
-                                               target_t_at_l_vec: jnp.ndarray,
-                                               min_thickness_phys_nm: float,
-                                               use_backside_correction: bool) -> jnp.ndarray:
+                                                nH_arr: jnp.ndarray, nL_arr: jnp.ndarray, nSub_arr: jnp.ndarray,
+                                                l_vec_optim: jnp.ndarray,
+                                                target_t_at_l_vec: jnp.ndarray,
+                                                min_thickness_phys_nm: float,
+                                                use_backside_correction: bool) -> jnp.ndarray:
     """
     JAX-compiled cost function for optimization. Calculates RMSE and includes penalties for thin layers.
     """
@@ -1350,7 +1350,7 @@ def get_T_from_batch_matrix(M_batch: jnp.ndarray, nSub_arr: jnp.ndarray) -> jnp.
 
 @jax.jit
 def calculate_rmse_basic_jax(Ts: jnp.ndarray, l_vec: jnp.ndarray,
-                            targets_tuple: Tuple[Tuple[float, float, float, float], ...]) -> jnp.ndarray:
+                             targets_tuple: Tuple[Tuple[float, float, float, float], ...]) -> jnp.ndarray:
     """A basic RMSE calculation function that works with a tuple of target definitions."""
     total_squared_error, total_points_in_targets = 0.0, 0
     for i in range(len(targets_tuple)):
@@ -1368,8 +1368,8 @@ def calculate_rmse_basic_jax(Ts: jnp.ndarray, l_vec: jnp.ndarray,
 
 @jax.jit
 def combine_and_calc_rmse(prod1: jnp.ndarray, prod2: jnp.ndarray,
-                         nSub_arr_in: jnp.ndarray,
-                         l_vec_in: jnp.ndarray, targets_tuple_in: Tuple) -> jnp.ndarray:
+                          nSub_arr_in: jnp.ndarray,
+                          l_vec_in: jnp.ndarray, targets_tuple_in: Tuple) -> jnp.ndarray:
     """Combines the matrix products from two halves of the stack and calculates the final RMSE."""
     M_total = vmap(jnp.matmul)(prod2, prod1)
     Ts = get_T_from_batch_matrix(M_total, nSub_arr_in)
@@ -2099,6 +2099,14 @@ def trigger_nominal_recalc():
             'force_ep': None
         }
 
+def on_nominal_structure_change():
+    """
+    Callback for when a fundamental nominal parameter (like the QWOT string) changes.
+    It resets any optimized state and triggers a full recalculation of the new nominal design.
+    """
+    clear_optimized_state()
+    trigger_nominal_recalc()
+
 st.title("🔬 Optimiseur de Couches Minces (Streamlit + JAX)")
 menu_cols = st.columns(9)
 with menu_cols[0]:
@@ -2172,7 +2180,7 @@ with main_layout[0]:
         st.session_state.nSub_r = st.number_input("n' Substrat", value=st.session_state.nSub_r, format="%.4f", key="nSub_const", on_change=trigger_nominal_recalc)
 
     st.subheader("Structure Nominale")
-    st.session_state.current_qwot = st.text_area("Multiplicateurs QWOT (séparés par des virgules)", value=st.session_state.current_qwot, key="qwot_input", on_change=clear_optimized_state, height=100)
+    st.session_state.current_qwot = st.text_area("Multiplicateurs QWOT (séparés par des virgules)", value=st.session_state.current_qwot, key="qwot_input", on_change=on_nominal_structure_change, height=100)
     num_layers_from_qwot = len([q for q in st.session_state.current_qwot.split(',') if q.strip()])
     qwot_cols = st.columns([3,2])
     with qwot_cols[0]:
@@ -2183,9 +2191,9 @@ with main_layout[0]:
             if init_layers_num > 0:
                 new_qwot = ",".join(['1'] * init_layers_num)
                 if new_qwot != st.session_state.current_qwot:
-                    st.session_state.current_qwot = new_qwot; clear_optimized_state(); trigger_nominal_recalc(); st.rerun()
+                    st.session_state.current_qwot = new_qwot; on_nominal_structure_change(); st.rerun()
             elif st.session_state.current_qwot != "":
-                st.session_state.current_qwot = ""; clear_optimized_state(); trigger_nominal_recalc(); st.rerun()
+                st.session_state.current_qwot = ""; on_nominal_structure_change(); st.rerun()
     st.caption(f"Couches Nominales Actuelles: {num_layers_from_qwot}")
 
     st.subheader("Cibles (T) & Paramètres de Calcul")
